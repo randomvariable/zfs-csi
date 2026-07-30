@@ -1,0 +1,89 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# zfs-csi E2E SSH-reboot customization, injected as image-builder
+# firstboot_custom_roles_post so it is installed AND started BEFORE the
+# firstboot `sudo reboot now` shell provisioner. That reboot happens before
+# node.yml runs, so a node_custom_roles_post role would be too late to help the
+# firstboot reboot -- which is exactly where the SLIRP half-open-socket stall
+# hangs the Packer build.
+#
+# The image-builder Packer QEMU build uses SLIRP usermode networking. On reboot
+# the guest must emit a FIN/RST for Packer's SSH connection *while the NIC is
+# still up*, or SLIRP keeps the host-side socket half-open (ESTABLISHED) and
+# Packer -- whose SSH keepalive cannot detect a half-open SLIRP socket -- blocks
+# until its 2h ssh_timeout. Ubuntu 24.04 uses ssh socket activation, so the
+# connection is served by a per-connection ssh@.service instance; the units
+# below sever it deterministically regardless of sshd topology. Safe because
+# this golden image only builds ephemeral E2E nodes.
+
+- name: Ensure ssh.service drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/ssh.service.d
+    state: directory
+    mode: "0755"
+
+# Helps only the traditional (non-socket-activated) sshd; harmless (inert) under
+# socket activation. The shutdown sever below is the topology-agnostic fix.
+- name: Ensure SSH sessions close on reboot before network teardown
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ssh.service.d/10-zfs-csi-e2e-killmode.conf
+    mode: "0644"
+    content: |
+      [Service]
+      KillMode=mixed
+
+- name: Install SSH connection sever script (SLIRP reboot detection)
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/zfs-csi-e2e-ssh-sever.sh
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      # Sever SSH during shutdown while the NIC is up so a SLIRP-hosted Packer
+      # build detects the reboot disconnect promptly instead of stalling on a
+      # half-open socket. See the zfs_csi_e2e_ssh role for the full rationale.
+      systemctl stop ssh.socket 2>/dev/null || true
+      ss -K state established '( sport = :22 or dport = :22 )' 2>/dev/null || true
+
+# A oneshot ordered After=network.target runs its ExecStop before network
+# teardown during shutdown (units stop in reverse start order). Ubuntu generic
+# kernels ship CONFIG_INET_DIAG_DESTROY, which `ss -K` requires.
+- name: Install SSH sever shutdown unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/zfs-csi-e2e-ssh-sever.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Sever SSH before network teardown for SLIRP Packer reboots (E2E)
+      After=network.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/true
+      ExecStop=/usr/local/sbin/zfs-csi-e2e-ssh-sever.sh
+      [Install]
+      WantedBy=multi-user.target
+
+# state: started is essential here: the unit must be ACTIVE before the firstboot
+# reboot so its ExecStop fires on that reboot. enabled: true keeps it in the
+# golden image for later node reboots.
+- name: Enable and start the SSH sever shutdown unit
+  ansible.builtin.systemd:
+    name: zfs-csi-e2e-ssh-sever.service
+    enabled: true
+    state: started
+    daemon_reload: true

@@ -1,0 +1,16 @@
+#cloud-config
+hostname: cp0
+manage_etc_hosts: true
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+packages:
+  - cilium-cli
+runcmd:
+  - [cloud-init-per, once, kubeadm-init, kubeadm, init, --pod-network-cidr=10.244.0.0/16, --node-name=cp0]
+  - [mkdir, -p, /root/.kube]
+  - [cp, /etc/kubernetes/admin.conf, /root/.kube/config]
+  - [chown, root:root, /root/.kube/config]
+  - [kubectl, --kubeconfig=/etc/kubernetes/admin.conf, taint, nodes, cp0, node-role.kubernetes.io/control-plane:NoSchedule-]

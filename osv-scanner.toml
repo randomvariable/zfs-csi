@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "The advisory only affects x/crypto/openpgp; this module uses x/crypto/ssh and govulncheck reports no reachable vulnerable symbols."

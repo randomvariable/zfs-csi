@@ -1,0 +1,281 @@
+# Copyright 2026 Naadir Jeewa
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.storage.enabled }}
+{{- $root := . }}
+{{- $explicit := gt (len .Values.storageOwners) 0 }}
+{{- if and $explicit .Values.storageNode.name }}
+{{- fail "storageOwners cannot be combined with legacy storageNode.name" }}
+{{- end }}
+{{- if and .Values.network.tls.enabled (not $explicit) (not .Values.network.nfsServer) (not .Values.nfsServer) }}
+{{- fail "network.tls.enabled requires network.nfsServer" }}
+{{- end }}
+{{- $owners := .Values.storageOwners }}
+{{- if not $explicit }}
+{{- $name := required "storageNode.name is required when storage.enabled is true" .Values.storageNode.name }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" $name) }}{{- fail (printf "storageNode.name %q must be a DNS subdomain for its TLS leaf Secret" $name) }}{{- end }}
+{{- $domain := required "storageNode.networkDomain is required when storage.enabled is true" .Values.storageNode.networkDomain }}
+{{- $guids := required "storageNode.authoritativePoolGUIDs is required when storage.enabled is true" .Values.storageNode.authoritativePoolGUIDs }}
+{{- $nfsHost := .Values.network.nfsServer | default .Values.nfsServer | required "network.nfsServer is required when storage.enabled is true" }}
+{{- $nvmeHost := required "network.portalHost is required when storage.enabled is true" .Values.network.portalHost }}
+{{- $owners = list (dict "name" $name "enabled" .Values.storageNode.enabled "nodeSelector" .Values.storageNode.selector "tolerations" .Values.storageNode.tolerations "authoritativePoolGUIDs" $guids "poolMountRoot" .Values.storageNode.poolMountRoot "nfs" (dict "host" $nfsHost "port" 2049) "nvme" (dict "host" $nvmeHost "port" .Values.network.portalPort) "networkDomain" $domain "reachableFrom" (.Values.storageNode.reachableFrom | default (list $domain))) }}
+{{- end }}
+{{- $ownerNames := dict }}
+{{- $poolGUIDOwners := dict }}
+{{- $endpointOwners := dict }}
+{{- range $owner := $owners }}
+{{- $enabled := true }}
+{{- if hasKey $owner "enabled" }}{{- $enabled = $owner.enabled }}{{- end }}
+{{- if $enabled }}
+{{- $name := required "storage owner name is required" $owner.name }}
+{{- if hasKey $ownerNames $name }}{{- fail (printf "duplicate storage owner name %q" $name) }}{{- end }}
+{{- $_ := set $ownerNames $name true }}
+{{- if eq (len $owner.nodeSelector) 0 }}{{- fail (printf "storage owner %q nodeSelector must not be empty" $name) }}{{- end }}
+{{- $domain := required (printf "storage owner %q networkDomain is required" $name) $owner.networkDomain }}
+{{- $reachable := required (printf "storage owner %q reachableFrom is required" $name) $owner.reachableFrom }}
+{{- if not (has $domain $reachable) }}{{- fail (printf "storage owner %q reachableFrom must include networkDomain %q" $name $domain) }}{{- end }}
+{{- $reachableSeen := dict }}
+{{- range $reachableDomain := $reachable }}
+{{- if hasKey $reachableSeen $reachableDomain }}{{- fail (printf "storage owner %q reachableFrom contains duplicate domain %q" $name $reachableDomain) }}{{- end }}
+{{- $_ := set $reachableSeen $reachableDomain true }}
+{{- end }}
+{{- $guids := required (printf "storage owner %q authoritativePoolGUIDs is required" $name) $owner.authoritativePoolGUIDs }}
+{{- range $guid := $guids }}
+{{- if hasKey $poolGUIDOwners $guid }}{{- fail (printf "authoritative pool GUID %q is assigned to both storage owners %q and %q" $guid (get $poolGUIDOwners $guid) $name) }}{{- end }}
+{{- $_ := set $poolGUIDOwners $guid $name }}
+{{- end }}
+{{- $nfsHost := required (printf "storage owner %q nfs.host is required" $name) $owner.nfs.host }}
+{{- $nfsPort := required (printf "storage owner %q nfs.port is required" $name) $owner.nfs.port }}
+{{- $nvmeHost := required (printf "storage owner %q nvme.host is required" $name) $owner.nvme.host }}
+{{- $nvmePort := required (printf "storage owner %q nvme.port is required" $name) $owner.nvme.port }}
+{{- $nfsEndpoint := printf "%s|%v" (lower $nfsHost) $nfsPort }}
+{{- $nvmeEndpoint := printf "%s|%v" (lower $nvmeHost) $nvmePort }}
+{{- range $endpoint := list $nfsEndpoint $nvmeEndpoint }}
+{{- if hasKey $endpointOwners $endpoint }}{{- fail (printf "unsafe endpoint collision %q between storage owners %q and %q" $endpoint (get $endpointOwners $endpoint) $name) }}{{- end }}
+{{- $_ := set $endpointOwners $endpoint $name }}
+{{- end }}
+{{- $nvmeAddress := printf "%s:%v" $nvmeHost $nvmePort }}
+{{- if contains ":" $nvmeHost }}{{- $nvmeAddress = printf "[%s]:%v" $nvmeHost $nvmePort }}{{- end }}
+{{- $resourceName := include "zfs-csi.ownerResourceName" (dict "name" $name) }}
+{{- $tlsServerSecretName := include "zfs-csi.tlsServerSecretName" $name }}
+{{- $nodeSelector := mergeOverwrite (dict "kubernetes.io/arch" "amd64") (deepCopy $owner.nodeSelector) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $resourceName }}
+  namespace: {{ include "zfs-csi.namespace" $root }}
+  labels:
+    app.kubernetes.io/name: zfs-csi
+    app.kubernetes.io/component: storage
+    zfs.csi.randomvariable.co.uk/owner: {{ $name | quote }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zfs-csi
+      app.kubernetes.io/component: storage
+      zfs.csi.randomvariable.co.uk/owner: {{ $name | quote }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zfs-csi
+        app.kubernetes.io/component: storage
+        zfs.csi.randomvariable.co.uk/owner: {{ $name | quote }}
+    spec:
+      terminationGracePeriodSeconds: 45
+      # Send PID 1 SIGTERM before forceful termination so the manager can stop
+      # the owned host-global nfsd lifecycle; hostPID is intentionally absent.
+      serviceAccountName: zfs-csi-storage
+      hostNetwork: true
+{{- if $root.Values.network.tls.enabled }}
+      # Target PSKs and NFS TLS upcalls must use host kernel namespaces.
+      hostUsers: true
+{{- end }}
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: {{ $root.Values.controller.priorityClassName }}
+      nodeSelector:
+{{ toYaml $nodeSelector | indent 8 }}
+{{- with $owner.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      initContainers:
+        - name: load-nvmet-modules
+          image: {{ include "zfs-csi.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ceu", "modprobe nvme-keyring && modprobe nvmet && modprobe nvmet-tcp"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: sys
+              mountPath: /sys
+      containers:
+        - name: storage
+          image: {{ include "zfs-csi.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "kill -TERM 1"]
+          args:
+            - --mode=storage
+            - --namespace={{ include "zfs-csi.namespace" $root }}
+            - --network-domain={{ $domain }}
+            - --reachable-from={{ join "," (sortAlpha $reachable) }}
+            - --expected-owner={{ $name }}
+            - --portal-host={{ $nvmeAddress }}
+            - --nfs-server={{ $nfsHost }}
+            - --key-tmpfs-dir=/run/zfs-csi
+            - --metrics-bind-address={{ $root.Values.storage.metricsBindAddress }}
+            - --health-probe-bind-address={{ $root.Values.storage.healthProbeBindAddress }}
+            - --max-concurrent-reconciles={{ $root.Values.storage.manager.maxConcurrentReconciles }}
+            - --sync-period={{ $root.Values.storage.manager.syncPeriod }}
+{{- if $root.Values.network.tls.enabled }}
+            - --transport-tls=true
+{{- end }}
+{{- if $root.Values.storage.enableVolumeImports }}
+            - --enable-volume-imports=true
+{{- end }}
+{{- if $root.Values.e2e.enableHealthRepairHold }}
+            - --e2e-enable-health-repair-hold=true
+{{- end }}
+{{- if $root.Values.encryption.enabled }}
+            - --openbao-addr={{ $root.Values.encryption.openbao.addr }}
+            - --openbao-mount={{ $root.Values.encryption.openbao.transitMount }}
+            - --openbao-role={{ $root.Values.encryption.openbao.role }}
+{{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: EXPECTED_OWNER
+              value: {{ $name | quote }}
+            - name: AUTHORITATIVE_POOL_GUIDS
+              value: {{ join "," $guids | quote }}
+            - name: NETWORK_DOMAIN
+              value: {{ $domain | quote }}
+            - name: REACHABLE_FROM
+              value: {{ join "," (sortAlpha $reachable) | quote }}
+            - name: NFS_SERVER
+              value: {{ $nfsHost | quote }}
+{{- if and $root.Values.encryption.enabled $root.Values.encryption.openbao.token }}
+            - name: OPENBAO_TOKEN
+              value: {{ $root.Values.encryption.openbao.token | quote }}
+{{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: dev
+              mountPath: /dev
+            - name: sys
+              mountPath: /sys
+            - name: run-zfs
+              mountPath: /run/zfs-csi
+            - name: var-lib-nfs
+              mountPath: /var/lib/nfs
+            - name: pool-mount-root
+              mountPath: {{ $owner.poolMountRoot }}
+              mountPropagation: Bidirectional
+{{- if $root.Values.network.tls.enabled }}
+        - name: tlshd
+          image: {{ include "zfs-csi.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |-
+              /usr/sbin/tlshd -s -c /etc/tlshd/config
+              exec sleep infinity
+{{- range $root.Values.network.tls.tlshd.extraArgs }}
+            - {{ . | quote }}
+{{- end }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: run-zfs
+              mountPath: /run/zfs-csi
+            - name: dev
+              mountPath: /dev
+            - name: sys
+              mountPath: /sys
+            - name: tls-server-cert
+              mountPath: /run/zfs-csi-tls
+              readOnly: true
+            - name: tls-ca
+              mountPath: /run/zfs-csi-tls-ca
+              readOnly: true
+            - name: tlshd-config
+              mountPath: /etc/tlshd/config
+              subPath: config
+              readOnly: true
+{{- end }}
+      volumes:
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: run-zfs
+          emptyDir:
+            medium: Memory
+        - name: var-lib-nfs
+          hostPath:
+            path: /var/lib/nfs
+        - name: pool-mount-root
+          hostPath:
+            path: {{ $owner.poolMountRoot }}
+            type: DirectoryOrCreate
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+{{- if $root.Values.network.tls.enabled }}
+        - name: tls-server-cert
+          secret:
+            secretName: {{ $tlsServerSecretName }}
+            # tlshd enforces per-file modes: 0600 for the private key, 0644
+            # for the certificate. Secret volumes default to 0644 for every
+            # file, so pin each key explicitly.
+            items:
+              - key: tls.crt
+                path: tls.crt
+                mode: 0644
+              - key: tls.key
+                path: tls.key
+                mode: 0600
+            optional: false
+        - name: tls-ca
+          secret:
+            secretName: zfs-csi-tls-ca-public
+            items:
+              - key: ca.crt
+                path: ca.crt
+            optional: false
+        - name: tlshd-config
+          configMap:
+            name: zfs-csi-tlshd-storage-config
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

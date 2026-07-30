@@ -1,0 +1,124 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: zfs-csi-packer-image-build
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[incoming]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/task: "git-clone"
+spec:
+  taskRunTemplate:
+    serviceAccountName: zfs-csi-packer
+    podTemplate:
+      securityContext:
+        fsGroup: 65532
+  timeouts:
+    pipeline: 1h
+    tasks: 45m
+  pipelineSpec:
+    params:
+      - name: repo_url
+        type: string
+      - name: revision
+        type: string
+      - name: image_builder_repo
+        type: string
+        default: https://github.com/kubernetes-sigs/image-builder.git
+      - name: image_builder_revision
+        type: string
+        default: main
+    workspaces:
+      - name: source
+      - name: basic-auth
+    tasks:
+      - name: fetch-source
+        taskRef:
+          name: git-clone
+        workspaces:
+          - name: output
+            workspace: source
+          - name: basic-auth
+            workspace: basic-auth
+        params:
+          - name: url
+            value: $(params.repo_url)
+          - name: revision
+            value: $(params.revision)
+          - name: depth
+            value: "2"
+
+      - name: image-builder-validate
+        runAfter:
+          - fetch-source
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          params:
+            - name: image_builder_repo
+              type: string
+            - name: image_builder_revision
+              type: string
+          workspaces:
+            - name: source
+          steps:
+            - name: static-image-builder-check
+              image: golang:1.26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: GOCACHE
+                  value: /tmp/gocache
+                - name: GOBIN
+                  value: /tmp/gobin
+                - name: IMAGE_BUILDER_CAPI_DIR
+                  value: /tmp/image-builder/images/capi
+              script: |
+                #!/bin/sh
+                set -eu
+                export PATH="/tmp/gobin:${PATH}"
+                apt-get update >/dev/null
+                apt-get install -y --no-install-recommends git ca-certificates >/dev/null
+                go install github.com/magefile/mage@v1.15.0
+                git clone --depth 1 --branch "$(params.image_builder_revision)" "$(params.image_builder_repo)" /tmp/image-builder
+                mage e2e:check
+                mage e2e:checkMutating
+        params:
+          - name: image_builder_repo
+            value: $(params.image_builder_repo)
+          - name: image_builder_revision
+            value: $(params.image_builder_revision)
+  params:
+    - name: repo_url
+      value: "{{ repo_url }}"
+    - name: revision
+      value: "{{ revision }}"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+    - name: basic-auth
+      secret:
+        secretName: "{{ git_auth_secret }}"

@@ -1,0 +1,55 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+{{- include "zfs-csi.validateStorageOwners" . }}
+{{- if and .Values.network.tls.enabled (or .Values.node.enabled .Values.storage.enabled) (not (and .Values.node.enabled .Values.storage.enabled)) }}
+{{- fail "network.tls.enabled requires node.enabled=true and storage.enabled=true" }}
+{{- end }}
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: zfs.csi.randomvariable.co.uk
+spec:
+  attachRequired: true
+  podInfoOnMount: false
+  # ReadWriteOnceWithFSType (the CSI-recommended default), NOT File: fsGroup is
+  # applied only to RWO volumes that declare an fsType (i.e. NVMe/ext4 block), and
+  # is SKIPPED for RWX NFS. File would recursively chown every mount including the
+  # shared NFS export -> expensive recursive chown + cross-consumer ownership
+  # clobber on a shared RWX volume. See docs/storage-model.md.
+  fsGroupPolicy: ReadWriteOnceWithFSType
+{{- if .Values.serviceAccountToken.enabled }}
+{{- if empty (trim .Values.serviceAccountToken.audience) }}
+{{- fail "serviceAccountToken.audience must be non-empty when serviceAccountToken.enabled is true" }}
+{{- end }}
+{{- if lt (int .Values.serviceAccountToken.expirationSeconds) 600 }}
+{{- fail "serviceAccountToken.expirationSeconds must be at least 600" }}
+{{- end }}
+  requiresRepublish: {{ .Values.serviceAccountToken.requiresRepublish }}
+  tokenRequests:
+    - audience: {{ trim .Values.serviceAccountToken.audience | quote }}
+      expirationSeconds: {{ int .Values.serviceAccountToken.expirationSeconds }}
+  serviceAccountTokenInSecrets: true
+{{- else }}
+  requiresRepublish: false
+{{- end }}
+  storageCapacity: true
+  # Deliberately false: on SELinux-enforcing clusters a recursive relabel of large
+  # or NFS volumes is catastrophic, and NFS `-o context=` support is limited. Node
+  # mounts do not request an SELinux context. Revisit per-workload if ever needed.
+  seLinuxMount: false
+  volumeLifecycleModes:
+    - Persistent

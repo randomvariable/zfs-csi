@@ -1,0 +1,89 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+managementClusterName: zfs-csi-e2e
+providers:
+  - name: cluster-api
+    type: CoreProvider
+    versions:
+      - name: v1.13.3
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.3/core-components.yaml
+  - name: kubeadm
+    type: BootstrapProvider
+    versions:
+      - name: v1.13.3
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.3/bootstrap-components.yaml
+  - name: kubeadm
+    type: ControlPlaneProvider
+    versions:
+      - name: v1.13.3
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.3/control-plane-components.yaml
+  - name: kubevirt
+    type: InfrastructureProvider
+    versions:
+      # Must match the CAPK provider installed on the management cluster
+      # (v0.11.2); clusterctl resolves the workload template against the
+      # installed provider version. The 0.11 series is CAPI contract v1beta2,
+      # but CAPK still serves its own infra types at v1alpha1.
+      - name: v0.11.2
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api-provider-kubevirt/releases/download/v0.11.2/infrastructure-components.yaml
+        contract: v1beta2
+        files:
+          # clusterctl's local repository client requires a metadata.yaml
+          # (version -> CAPI contract map) per provider release; vendored from
+          # the CAPK v0.1.10 release asset.
+          - sourcePath: "kubevirt/kubevirt-metadata.yaml"
+            targetName: "metadata.yaml"
+          # Registered as the "zfs-csi" flavor; CreateRepository copies it into
+          # the per-run clusterctl repo and ConfigCluster.Flavor="zfs-csi"
+          # selects it.
+          - sourcePath: "kubevirt/cluster-template-zfs-csi.yaml"
+            targetName: "cluster-template-zfs-csi.yaml"
+variables:
+  # CNI applied to the workload cluster via the framework's CNIManifestPath.
+  CNI: "data/cni/calico.yaml"
+  # zfs-csi flavor substitution variables (the framework provides CLUSTER_NAME,
+  # NAMESPACE, KUBERNETES_VERSION, CONTROL_PLANE_MACHINE_COUNT,
+  # WORKER_MACHINE_COUNT).
+  CRI_PATH: "/var/run/containerd/containerd.sock"
+  # Shared read-only golden root PVC (cephfs, RWX) that every node VM mounts as
+  # the backing store for a per-VM ephemeral overlay. Bare PVC name (no
+  # namespace): the E2E now runs the VMs in the images namespace, so the PVC is
+  # namespace-local. Published by `mage image:golden` as the CDI DataVolume PVC.
+  GOLDEN_ROOT_PVC: "ubuntu-2404-kube-v1.36.2"
+  # Generic worker replicas form one consumer reachability group.
+  CONSUMER_NETWORK_DOMAIN: "fabric-a"
+  E2E_RUN_ID: "unassigned"
+  DATA_DISK_SIZE: "20Gi"
+  # Dedicated E2E RBD class (mounter: kernel, reclaimPolicy: Delete) so the
+  # per-run tank0 data disk self-cleans and uses the fast krbd mounter.
+  DATA_DISK_STORAGE_CLASS: "ceph-block-ec-e2e"
+  # Site-local registry mirror used to pre-pull Kubernetes images into node VMs.
+  # Override for your own environment; no site topology is committed here.
+  REGISTRY_MIRROR_HOST: "registry.example.invalid"
+  REGISTRY_MIRROR_IP: "127.0.0.1"
+  REGISTRY_MIRROR_PATH: "zfs-csi/kubernetes"
+intervals:
+  # CAPI interval format is [timeout, polling], timeout first (see the CAPA
+  # e2e config). Reversing them makes the framework time out at the polling
+  # interval -- e.g. [10s, 45m] times out after 10s.
+  default/wait-cluster: ["60m", "15s"]
+  default/wait-control-plane: ["45m", "15s"]
+  default/wait-worker-nodes: ["45m", "15s"]

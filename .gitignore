@@ -1,0 +1,84 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Editor/IDE
+# .idea/
+# .vscode/
+
+
+# binaries
+/bin/
+/dist/
+/zfs-csi
+*.test
+*.out
+
+# Harnesses
+/.slim/
+
+
+# go
+/vendor/
+
+# MkDocs build output (docs site is published by CI, not committed)
+/site/
+
+# editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# generated CRDs are checked in (deploy/crd), but keep tmp
+/tmp/
+
+# tooling binaries (installed by mage tools:ensure / setup-envtest)
+/hack/bin/
+/hack/envtest/
+/hack/tools/bin/
+
+# Mage's generated dispatch source is temporary and is normally removed after a run.
+/magefiles/mage_output_file.go
+
+# non-mutating E2E render output
+/test/e2e/_rendered/
+/test/e2e/packer/*.pkrvars.json
+
+# mutating E2E run artifacts (clusterctl repos, rendered per-run templates, logs)
+/test/e2e/_artifacts/
+# stray artifacts dir if a target is run from the repo root instead of test/e2e
+/_artifacts/
+/hack/venv/
+
+# static E2E lane: real infrastructure values never enter the repo
+/test/e2e/data/infrastructure-static/
+.env.static
+
+# opencode local tooling config (never commit)
+/config.json

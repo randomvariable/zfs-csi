@@ -1,0 +1,92 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: mage-common.randomvariable.co.uk/v1alpha1
+kind: ToolConfiguration
+spec:
+  toolsDir: hack/bin
+  tools:
+    - name: golangci-lint
+      version: v2.9.0
+      sources:
+        - type: golangci-lint
+          url: github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
+    - name: controller-gen
+      version: v0.21.0
+      sources:
+        - type: go
+          url: sigs.k8s.io/controller-tools/cmd/controller-gen
+
+    - name: addlicense
+      version: v1.1.1
+      sources:
+        - type: go
+          url: github.com/google/addlicense
+
+    - name: setup-envtest
+      version: release-0.21
+      sources:
+        - type: go
+          url: sigs.k8s.io/controller-runtime/tools/setup-envtest
+
+    - name: ginkgo
+      version: v2.27.4
+      sources:
+        - type: go
+          url: github.com/onsi/ginkgo/v2/ginkgo
+
+    - name: gotestsum
+      version: v1.13.0
+      sources:
+        - type: go
+          url: gotest.tools/gotestsum
+
+    - name: go-test-coverage
+      version: v2.15.0
+      sources:
+        - type: go
+          url: github.com/vladopajic/go-test-coverage/v2
+
+    - name: kubectl
+      version: v1.36.2
+      sources:
+        - type: download
+          url: "https://dl.k8s.io/release/{{.Version}}/bin/{{.OS}}/{{.Arch}}/kubectl"
+          checksum:
+            url: "https://dl.k8s.io/release/{{.Version}}/bin/{{.OS}}/{{.Arch}}/kubectl.sha256"
+
+    - name: packer
+      version: 1.15.4
+      sources:
+        - type: download
+          url: "https://releases.hashicorp.com/packer/{{.Version}}/packer_{{.Version}}_{{.OS}}_{{.Arch}}.zip"
+          binaryPath: packer
+          checksum:
+            url: "https://releases.hashicorp.com/packer/{{.Version}}/packer_{{.Version}}_SHA256SUMS"
+          archMap:
+            amd64: amd64
+            arm64: arm64
+
+    # mkdocs is the documentation-site builder. The mkdocs-material package pulls
+    # in the MkDocs core plus the Material theme and its pymdown-extensions, so
+    # the single `uvx --from mkdocs-material==<ver> mkdocs` shim builds and serves
+    # the docs/ site. Used by `mage docs:build` (--strict) and `mage docs:serve`.
+    - name: mkdocs
+      version: 9.7.6
+      sources:
+        - type: uvx
+          package: mkdocs-material

@@ -1,0 +1,95 @@
+{{- if and .Values.network.tls.enabled .Values.network.tls.signer.enabled (or .Values.node.enabled .Values.storage.enabled) }}
+{{- $signingNamespace := include "zfs-csi.tlsSigningNamespace" . }}
+{{- $owners := .Values.storageOwners }}
+{{- if and (eq (len $owners) 0) .Values.storage.enabled }}
+{{- $owners = list (dict "name" .Values.storageNode.name "nfs" (dict "host" (.Values.network.nfsServer | default .Values.nfsServer))) }}
+{{- end }}
+{{- $serverLeaves := list }}
+{{- range $owner := $owners }}
+{{- $enabled := true }}{{- if hasKey $owner "enabled" }}{{- $enabled = $owner.enabled }}{{- end }}
+{{- if $enabled }}
+{{- $ownerName := required "enabled storage owner name is required for TLS signer" $owner.name }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" $ownerName) }}{{- fail (printf "TLS signer storage owner name %q must be a DNS subdomain" $ownerName) }}{{- end }}
+{{- $nfs := required (printf "storage owner %q requires nfs configuration for TLS signer" $ownerName) $owner.nfs }}
+{{- $endpoint := required (printf "storage owner %q requires nfs.host for TLS signer" $ownerName) $nfs.host }}
+{{- if or (contains "=" $endpoint) (contains "," $endpoint) }}{{- fail (printf "TLS signer storage owner %q nfs.host cannot contain ',' or '='" $ownerName) }}{{- end }}
+{{- $serverLeaves = append $serverLeaves (printf "%s=%s" $ownerName $endpoint) }}
+{{- end }}
+{{- end }}
+{{- if and .Values.node.enabled .Values.storage.enabled (eq (len $serverLeaves) 0) }}{{- fail "network.tls.enabled requires at least one enabled storage owner" }}{{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zfs-csi-tls-signer
+  namespace: {{ $signingNamespace }}
+  labels:
+    app.kubernetes.io/name: zfs-csi
+    app.kubernetes.io/component: tls-signer
+spec:
+  serviceName: zfs-csi-tls-signer
+  replicas: {{ .Values.network.tls.signer.replicas }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zfs-csi
+      app.kubernetes.io/component: tls-signer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zfs-csi
+        app.kubernetes.io/component: tls-signer
+    spec:
+      serviceAccountName: zfs-csi-tls-signer
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: signer
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --mode=tls-signer
+            - --namespace={{ include "zfs-csi.namespace" . }}
+            - --tls-signing-namespace={{ $signingNamespace }}
+            - --tls-server-leaves={{ join "," $serverLeaves }}
+            - --leader-elect=true
+            - --metrics-bind-address={{ .Values.network.tls.signer.metricsBindAddress }}
+            - --health-probe-bind-address=:8082
+          ports:
+            - name: healthz
+              containerPort: 8082
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+          resources:
+{{ toYaml .Values.network.tls.signer.resources | indent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+{{- with .Values.network.tls.signer.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.network.tls.signer.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- end }}

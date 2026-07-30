@@ -1,0 +1,306 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default values for the zfs-csi chart.
+#
+# storageOwners configures independent logical storage owners. Leave it empty to
+# preserve the legacy single-owner storageNode/network contract.
+
+# Namespace the driver components run in. Defaults to the Helm release namespace.
+namespace: ""
+
+image:
+  repository: docker.io/randomvariable/zfs-csi
+  # tag defaults to Chart.appVersion when empty.
+  tag: ""
+  # digest selects an immutable image and takes precedence over tag when set.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# controller-level operational hardening (F12). The controller Deployment and
+# storage agent both drive provisioning and are pinned single-instance to the
+# storage node, so they are marked cluster-critical. A PodDisruptionBudget keeps
+# at least one controller replica during voluntary disruptions.
+controller:
+  # Enable CSI controller workloads after configuring storageNode.name and the
+  # transport endpoint required by the StorageClasses in use.
+  enabled: false
+  # One replica preserves the legacy deployment shape. Set replicas >1 for the
+  # owner-independent active-active controller and leader-elected CSI sidecars.
+  replicas: 1
+  priorityClassName: system-cluster-critical
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  tolerations: []
+  topologySpreadConstraints: []
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8082"
+  manager:
+    # Periodic full-cache resync. Increase for large, stable fleets; lower only
+    # when faster drift repair is worth the reconcile/API load.
+    syncPeriod: 10m
+  sidecars:
+    provisioner:
+      workerThreads: 100
+      kubeAPIQPS: 5
+      kubeAPIBurst: 10
+      timeout: 10s
+    attacher:
+      workerThreads: 10
+      kubeAPIQPS: 5
+      kubeAPIBurst: 10
+      timeout: 15s
+    resizer:
+      workers: 10
+      kubeAPIQPS: 5
+      kubeAPIBurst: 10
+      timeout: 10s
+    snapshotter:
+      workerThreads: 10
+      kubeAPIQPS: 5
+      kubeAPIBurst: 10
+      timeout: 1m
+    healthMonitor:
+      workerThreads: 10
+      timeout: 10s
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+# Explicit logical storage owners. Every enabled owner gets one Recreate
+# Deployment and one administrator-owned StorageNode. Empty preserves legacy
+# storageNode/network synthesis.
+storageOwners: []
+# Example:
+# storageOwners:
+#   - name: storage-a
+#     enabled: true
+#     nodeSelector:
+#       kubernetes.io/arch: amd64
+#       zfs.csi.randomvariable.co.uk/storage-owner: storage-a
+#     tolerations:
+#       - key: zfs.csi.randomvariable.co.uk/storage
+#         operator: Equal
+#         value: "true"
+#         effect: NoSchedule
+#     authoritativePoolGUIDs: ["1234567890123456789"]
+#     poolMountRoot: /tank
+#     nfs:
+#       host: 10.19.1.20
+#       port: 2049
+#     nvme:
+#       host: 10.19.1.20
+#       port: 4420
+#     networkDomain: fabric-a
+#     reachableFrom: [fabric-a]
+
+# Test-only chart switches. Disabled by default and never used by normal
+# deployments; the E2E harness enables the health hold for its bounded fault.
+e2e:
+  enableHealthRepairHold: false
+
+# storageNode pins storage-owning components to one ZFS host. Controller owner
+# placement independently uses fresh StorageNode inventory. selector/tolerations
+# use the canonical storage label+taint so workloads land on the tainted host.
+storageNode:
+  # Legacy single-owner identity. Used only when storageOwners is empty.
+  # Node hosting this chart's storage-agent workload. Controller placement is
+  # selected dynamically from fresh StorageNode inventory.
+  name: ""
+  # authoritativePoolGUIDs and networkDomain are explicit administrator intent. When both are set,
+  # chart renders cluster-scoped StorageNode; storage agent never creates it.
+  authoritativePoolGUIDs: []
+  networkDomain: workers
+  # Complete consumer-domain set able to reach this owner. Empty preserves the
+  # legacy single-domain contract by using networkDomain.
+  reachableFrom: []
+  enabled: true
+  selector:
+    kubernetes.io/arch: amd64
+    zfs.csi.randomvariable.co.uk/storage: "true"
+  tolerations:
+    - key: zfs.csi.randomvariable.co.uk/storage
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  # poolMountRoot is the host directory under which the ZFS pool mounts its
+  # datasets (the pool's mountpoint, e.g. /tank for a pool named "tank"). The
+  # storage agent bind-mounts this with Bidirectional propagation so datasets it
+  # `zfs mount`s inside the container also appear in the HOST mount namespace —
+  # required because the node's in-kernel nfsd serves the host's mount view, so a
+  # container-only mount would export an empty path ("access denied by server").
+  # The host path must itself be a shared-propagation mount (a ZFS pool root is).
+  poolMountRoot: /tank
+
+storage:
+  # Enable privileged storage agents after configuring storageOwners or the
+  # legacy storageNode/network values.
+  enabled: false
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8082"
+  # Enable only after retain-aware storage agents are deployed on every storage
+  # node. Enabling this starts materializing Imported/Retain Volume objects;
+  # older agents could destroy their backing datasets during finalization.
+  enableVolumeImports: false
+  manager:
+    maxConcurrentReconciles: 10
+    syncPeriod: 10m
+
+node:
+  # Enable the CSI node plugin after configuring the transport endpoint for the
+  # enabled StorageClasses.
+  enabled: false
+  # Worker reachability class reported through CSI NodeGetInfo as
+  # topology.zfs.csi.randomvariable.co.uk/network-domain. Must match one StorageNode
+  # reachable domain. Use a stable Kubernetes label value, never an endpoint.
+  # Each node pod advertises one configured reachability domain.
+  networkDomainSource: static
+  networkDomainLabel: topology.zfs.csi.randomvariable.co.uk/network-domain
+  networkDomain: workers
+  # Optional node plugin DaemonSet scheduling constraints.
+  nodeSelector: {}
+  # 0 disables the scheduler-facing attach limit.
+  maxVolumesPerNode: 128
+  nvme:
+    # -1 is deliberate: retain controllers across storage-node reboot (F2).
+    ctrlLossTMO: -1
+    reconnectDelay: 10
+
+# Requests a workload pod-bound service account token from kubelet for
+# NodePublishVolume. Core zfs-csi does not consume or authorize with this token;
+# enable only for a downstream node-publish policy integration.
+serviceAccountToken:
+  enabled: false
+  audience: ""
+  expirationSeconds: 3600
+  # Repeated NodePublishVolume calls allow integrations to receive fresh tokens,
+  # but add kubelet and driver churn.
+  requiresRepublish: false
+
+# nvmet controls the standalone nvmet-controller DaemonSet (NVMeExport CR
+# reconciler). DISABLED by default (F8): the storage-agent writes nvmet configfs
+# directly, so a second in-cluster configfs writer would race the shared per-node
+# port. Enable only after migrating the agent to the CR-mediated model.
+nvmet:
+  enabled: false
+
+# Current single-owner endpoints. Use an unbracketed IPv4/IPv6 literal or DNS
+# host; runtime brackets IPv6 when building NFS mount sources and NVMe portals.
+# These are endpoint hosts, not network-domain labels. A valid owner endpoint
+# change may refresh Volume status used by future publish/stage operations; it
+# does not migrate active mounts or attachments. The E2E harness sets these to
+# the storage node's InternalIP.
+network:
+  portalHost: ""
+  portalPort: 4420
+  nfsServer: ""
+  # Kernel RPC-with-TLS is on by default. Privileged host-network tlshd sidecars
+  # start only when both node and storage workloads are enabled. TLS volumes fail
+  # closed until storage creates a valid endpoint-bound server leaf certificate.
+  tls:
+    enabled: true
+    # Private CA lives outside the driver namespace because runtime node/storage
+    # identities need broad Secret reads for dynamic NVMe PSKs.
+    signingNamespace: ""
+    signer:
+      # Stable custom signer is fixed by API contract and chart templates:
+      # zfs.csi.randomvariable.co.uk/nfs-client.
+      enabled: true
+      replicas: 1
+      metricsBindAddress: ":8080"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      tolerations: []
+    tlshd:
+      loglevel: 0
+      extraArgs: []
+
+# StorageClasses created by the chart. tank* map to the tank pool, flash* to the
+# flash pool; NVMe classes are block/nvme-tcp, NFS classes are filesystem.
+storageClasses:
+  tankNVMe:
+    enabled: false
+    name: zfs-tank-nvme
+    pool: tank
+    # XFS is the default for NVMe-TCP zvols: it scales well for VM and
+    # sequential-I/O workloads. Use ext4 for metadata-heavy small-file loads.
+    fsType: xfs
+    # Align this with the dominant workload's I/O size. 16k suits databases;
+    # 128k is a common sequential/VM choice. It is immutable after creation.
+    blocksize: 16k
+    # Additional filesystem mount options passed by Kubernetes to NodeStage.
+    # Keep this empty by default. Modern XFS no longer supports nobarrier.
+    mountOptions: []
+    reclaimPolicy: Delete
+  tankNFS:
+    # At least one NFS export CIDR is mandatory. Enable after setting nfsExportCIDRs for
+    # the consumer-node network.
+    enabled: false
+    name: zfs-tank-nfs
+    pool: tank
+    nfsExportCIDRs: []
+    reclaimPolicy: Delete
+  # StorageClasses are never marked as Kubernetes' default StorageClass. This
+  # chart must not affect unrelated PVCs in the cluster.
+  defaultClass: ""
+  tankNFSTLS:
+    enabled: true
+    name: zfs-tank-nfs-tls
+    pool: tank
+    nfsExportCIDRs: ["127.0.0.1/32"]
+    reclaimPolicy: Delete
+  tankNVMeTLS:
+    enabled: true
+    name: zfs-tank-nvme-tls
+    pool: tank
+    fsType: xfs
+    blocksize: 16k
+    mountOptions: []
+    reclaimPolicy: Delete
+  flashNVMe:
+    enabled: false
+    name: zfs-flash-nvme
+    pool: flash
+    fsType: xfs
+    blocksize: 16k
+    mountOptions: []
+    reclaimPolicy: Delete
+  flashNFS:
+    enabled: false
+    name: zfs-flash-nfs
+    pool: flash
+    nfsExportCIDRs: []
+    reclaimPolicy: Delete
+
+# OpenBao Transit-backed ZFS native encryption. When enabled, the controller +
+# storage agent authenticate to OpenBao (Kubernetes auth by default; a static
+# token may be supplied for dev), generate a per-volume DEK via Transit, and
+# create datasets with encryption=on. Encryption is requested per-volume via the
+# StorageClass parameter `encrypted: "true"`.
+encryption:
+  enabled: false
+  openbao:
+    addr: http://openbao.openbao.svc:8200
+    transitMount: transit
+    role: zfs-csi-storage
+    # token: static dev-mode root token (leave empty to use Kubernetes auth).
+    token: ""

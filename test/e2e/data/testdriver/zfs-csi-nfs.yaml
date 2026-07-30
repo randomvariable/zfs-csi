@@ -1,0 +1,70 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# External-storage conformance testdriver for the zfs-csi NFS (filesystem, RWX)
+# path. Consumed by the upstream suite via `-storage.testdriver=<this>` inside
+# the version-matched conformance container (see test/e2e/conformance.go).
+#
+# NAME is synthetic (`...-nfs`) and DISTINCT from the NVMe testdriver — see the
+# NVMe file's header for why (external suite keys its tree by DriverInfo.Name).
+StorageClass:
+  # Copy the chart-installed zfs-tank-nfs SC verbatim (pool=tank, type=filesystem,
+  # nfsExportCIDRs baked per-environment, volumeBindingMode: Immediate).
+  FromExistingClassName: zfs-tank-nfs
+SnapshotClass:
+  FromExistingClassName: zfs-tank-snapclass
+VolumeAttributesClass:
+  # Compression is a backend dataset property and applies equally to NFS
+  # filesystem volumes. The shared class is installed before conformance.
+  FromExistingClassName: zfs-csi-e2e-compression-zstd-3
+DriverInfo:
+  Name: zfs.csi.randomvariable.co.uk-nfs
+  # Imports use bespoke static PVs in the dedicated lifecycle scenario, not
+  # upstream's generic preprovisioned-volume adapter.
+  PreprovisionedPV: false
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 16Gi
+  # NFS filesystem volumes have no client-imposed fsType (the export is already a
+  # filesystem). Leave SupportedFsType unset so the suite uses the default path.
+  Capabilities:
+    persistence: true          # data survives pod restart
+    block: false               # NFS is filesystem-only
+    exec: true                 # exec-in-volume works on the NFS mount
+    multipods: true            # RWX: many pods, many nodes (proven cross-node smoke)
+    RWX: true                  # ReadWriteMany
+    controllerExpansion: true  # RPC_EXPAND_VOLUME advertised (zfs set quota/refquota)
+    # nodeExpansion FALSE for NFS: a network filesystem has no node-side block
+    # device to grow -- the node-expand RPC is a no-op, and claiming it hangs the
+    # node-expansion conformance test waiting on an op that never fires (oracle).
+    nodeExpansion: false
+    onlineExpansion: true      # controller-side quota grow is online
+    offlineExpansion: true
+    pvcDataSource: true        # RPC_CLONE_VOLUME (zfs clone). Promote-aware delete lands (8e382dd); NFS clone re-verify pending live.
+    snapshotDataSource: true   # external-snapshotter deployed; libzfs snapshot path shared with block (proven live on block)
+    topology: false            # network-attached: empty AccessibleTopology (MEM 2245)
+    # The node limit is driver-wide, but this testdriver covers NFS semantics.
+    # Exercise scheduler enforcement once through the NVMe testdriver instead of
+    # repeating the expensive N-volume suite for a network filesystem.
+    volumeLimits: false
+    capacity: true
+    singleNodeVolume: false
+  RequiredAccessModes:
+    - ReadWriteMany
+    - ReadWriteOnce
+  StressTestOptions:
+    NumPods: 4
+    NumRestarts: 3

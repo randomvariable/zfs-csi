@@ -1,0 +1,86 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.nvmet.enabled }}
+{{- $storageNodeName := required "storageNode.name is required when nvmet.enabled is true" .Values.storageNode.name }}
+{{- $portalHost := required "network.portalHost is required when nvmet.enabled is true" .Values.network.portalHost }}
+# F8: the nvmet-controller reconciles NVMeExport CRs into the SAME configfs tree
+# the storage-agent writes directly. Nothing in the volume path creates
+# NVMeExport CRs today, so this second configfs writer is idle — but two
+# processes writing the shared per-node port cannot be serialised by the agent's
+# in-process portMu. It is therefore DISABLED by default; enable only once the
+# agent has been migrated to write NVMeExport CRs and stops touching configfs.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvmet-controller
+  namespace: {{ include "zfs-csi.namespace" . }}
+  labels:
+    app.kubernetes.io/name: nvmet-controller
+    app.kubernetes.io/component: nvmet
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nvmet-controller
+      app.kubernetes.io/component: nvmet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nvmet-controller
+        app.kubernetes.io/component: nvmet
+    spec:
+      serviceAccountName: nvmet-controller
+      hostNetwork: true
+      nodeSelector:
+{{- toYaml .Values.storageNode.selector | nindent 8 }}
+      tolerations:
+{{- toYaml .Values.storageNode.tolerations | nindent 8 }}
+      initContainers:
+        - name: load-nvmet-modules
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ceu", "modprobe nvme-keyring && modprobe nvmet && modprobe nvmet-tcp"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: sys
+              mountPath: /sys
+      containers:
+        - name: nvmet-controller
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          args:
+            - --mode=nvmet
+            - --namespace={{ include "zfs-csi.namespace" . }}
+            - --portal-host={{ $portalHost }}
+            - --metrics-bind-address=:8081
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+      volumes:
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+{{- end }}

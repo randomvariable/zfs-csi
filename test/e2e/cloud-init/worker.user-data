@@ -1,0 +1,10 @@
+#cloud-config
+hostname: worker0
+manage_etc_hosts: true
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+runcmd:
+  - [/usr/local/sbin/zfs-csi-e2e-ready]

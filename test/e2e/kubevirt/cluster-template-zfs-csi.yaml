@@ -1,0 +1,639 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Custom Cluster API Provider KubeVirt (CAPK) cluster template for the zfs-csi
+# E2E driver-proof (issue #19). Consumed by the CAPI test framework as the
+# "zfs-csi" flavor (cluster-template-zfs-csi.yaml).
+#
+# Shape is derived from CAPK v0.1.10 templates/cluster-template-persistent-storage.yaml,
+# extended for zfs-csi:
+#   - all node roots are per-machine CDI clones of the golden DataSource
+#     (ubuntu-2404-kube-*, OpenZFS + nvme/nfs modules baked) on a clone-capable
+#     storage class, NOT ephemeral containerDisks (a virt-launcher restart would
+#     otherwise wipe etcd/kubelet mid-run);
+#   - two dedicated storage MachineDeployments carry independent blank ZFS pool
+#     disks with deterministic guest serials; owner labels/taints are present at
+#     kubelet registration and retained by later harness reconciliation;
+#   - a CNI ClusterResourceSet applies the workload-cluster CNI (the harness
+#     populates the referenced ConfigMap), without which nodes stay NotReady.
+#
+# clusterctl substitutes dollar-brace variable references. The CAPI framework
+# provides CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT; the remainder come from
+# the E2E config / lifecycle test. (Do not write an example variable reference
+# with dollar-brace syntax in a comment: clusterctl scans the whole file,
+# comments included, and would treat it as an unset required variable.)
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+        - 10.243.0.0/16
+    services:
+      cidrBlocks:
+        - 10.95.0.0/16
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    kind: KubevirtCluster
+    name: "${CLUSTER_NAME}"
+    namespace: "${NAMESPACE}"
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+    namespace: "${NAMESPACE}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: KubevirtCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  # Expose the control-plane API via LoadBalancer (Cilium LB IP pool on the
+  # site management network). The LB external IP is:
+  #   - Reachable from the management cluster (Cilium L2/BGP announcement)
+  #   - Reachable from inside the VM via passt (L4 proxy -> pod netns -> Cilium
+  #     routes LB IP -> service -> pod -> apiserver)
+  #   - In the apiserver cert SANs (kubeadm adds controlPlaneEndpoint)
+  # This is the stable endpoint kubeadm post-init phases (upload-config,
+  # bootstrap-token, addon/kube-proxy) need. Without it, those phases connect
+  # to the ClusterIP which isn't routable until kube-proxy is deployed
+  # (chicken-and-egg). With masquerade this appeared to work via SLIRP, but
+  # SLIRP was too unstable. With passt the L4 proxy is stable.
+  controlPlaneServiceTemplate:
+    spec:
+      type: LoadBalancer
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: KubevirtMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      virtualMachineBootstrapCheck:
+        checkStrategy: ssh
+      virtualMachineTemplate:
+        metadata:
+          namespace: "${NAMESPACE}"
+        spec:
+          runStrategy: Always
+          template:
+            spec:
+              domain:
+                # auto: give each disk marked dedicatedIOThread its own
+                # host iothread so virtio-blk submission does not serialise
+                # behind the vCPU threads under kubeadm/etcd load.
+                ioThreadsPolicy: auto
+                cpu:
+                  # 4 vCPU: kubeadm init runs etcd+apiserver+controller-manager+
+                  # scheduler simultaneously on the CP node. With 2 vCPU,
+                  # containerd hits DeadlineExceeded under load, causing
+                  # upload-config/ClusterRoleBinding timeouts and a cascade of
+                  # control-plane component crash-loops.
+                  cores: 4
+                  # host-passthrough: expose the full host CPU (incl. all
+                  # instruction-set extensions) to the guest instead of the
+                  # conservative emulated baseline model. E2E VMs are
+                  # disposable and never live-migrate, so CPU-model
+                  # portability does not matter.
+                  model: host-passthrough
+                memory:
+                  guest: "8Gi"
+                devices:
+                  networkInterfaceMultiqueue: true
+                  # blockMultiQueue: expose one virtio-blk queue per vCPU so
+                  # the guest can parallelise disk submission across cores.
+                  blockMultiQueue: true
+                  disks:
+                    - disk:
+                        bus: virtio
+                      name: boot
+                      # writeback: cache guest reads/writes in the virt-launcher
+                      # host page cache instead of O_DIRECT to the Ceph RBD
+                      # backing store. Default (none) makes every guest disk
+                      # access a synchronous RBD network round-trip, which
+                      # stalls boot-from-disk for minutes. E2E VMs are
+                      # disposable, so the writeback crash-consistency tradeoff
+                      # is acceptable.
+                      cache: writeback
+                      dedicatedIOThread: true
+                  interfaces:
+                    - name: default
+                      model: virtio
+                      bridge: {}
+              networks:
+                - name: default
+                  multus:
+                    default: true
+                    networkName: vlan200
+              evictionStrategy: External
+              volumes:
+                - name: boot
+                  # ephemeral: a per-VM local qcow2 overlay backed by the shared
+                  # read-only golden root PVC (cephfs, RWX). All node VMs mount
+                  # the same golden PVC read-only and write only to their
+                  # disposable overlay, so there is no per-machine CDI clone
+                  # (the clone was the multi-minute boot stall) and the golden
+                  # image is read once and page-cached. Overlay is discarded on
+                  # VMI stop, which is fine: E2E VMs never restart mid-run.
+                  ephemeral:
+                    persistentVolumeClaim:
+                      claimName: "${GOLDEN_ROOT_PVC}"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  machineTemplate:
+    infrastructureRef:
+      kind: KubevirtMachineTemplate
+      apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+      name: "${CLUSTER_NAME}-control-plane"
+      namespace: "${NAMESPACE}"
+  kubeadmConfigSpec:
+    # preKubeadmCommands: runs before "kubeadm init".
+    #
+    preKubeadmCommands:
+      # Site-local registry mirror. REGISTRY_MIRROR_HOST/IP are supplied by the
+      # harness from the environment so no site topology is baked into the repo.
+      - "grep -q '${REGISTRY_MIRROR_HOST}' /etc/hosts || echo '${REGISTRY_MIRROR_IP} ${REGISTRY_MIRROR_HOST}' >> /etc/hosts"
+      - |
+        primary_registry=registry.k8s.io
+        mirror_registry=${REGISTRY_MIRROR_HOST}/${REGISTRY_MIRROR_PATH}
+        for image in $(kubeadm config images list --config /run/kubeadm/kubeadm.yaml); do
+          suffix=$(printf '%s\n' "$image" | sed "s#^$${primary_registry}/##")
+          case "$${suffix}" in
+            coredns/coredns:*) suffix=$(printf '%s\n' "$${suffix}" | sed 's#^coredns/##') ;;
+          esac
+          mirror=$${mirror_registry}/$${suffix}
+          pulled=false
+          for attempt in $(seq 1 5); do
+            if timeout 90s ctr --namespace k8s.io images pull "$${mirror}" 2>&1; then
+              ctr --namespace k8s.io images tag "$${mirror}" "$image"
+              pulled=true
+              break
+            fi
+            sleep 5
+          done
+          if [ "$${pulled}" != true ]; then
+            echo "failed to pre-pull $image from $${mirror}" >&2
+            exit 1
+          fi
+        done
+    initConfiguration:
+      skipPhases:
+        - wait-control-plane
+      nodeRegistration:
+        criSocket: "${CRI_PATH}"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: "${CRI_PATH}"
+  version: "${KUBERNETES_VERSION}"
+---
+# Generic worker pool: golden-image clone roots, no data disks.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        zfs.csi.randomvariable.co.uk/consumer-pool: default
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          name: "${CLUSTER_NAME}-md-0"
+          namespace: "${NAMESPACE}"
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+      infrastructureRef:
+        name: "${CLUSTER_NAME}-md-0"
+        namespace: "${NAMESPACE}"
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+        kind: KubevirtMachineTemplate
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: KubevirtMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      virtualMachineBootstrapCheck:
+        checkStrategy: ssh
+      virtualMachineTemplate:
+        metadata:
+          namespace: "${NAMESPACE}"
+        spec:
+          runStrategy: Always
+          template:
+            spec:
+              domain:
+                ioThreadsPolicy: auto
+                cpu:
+                  cores: 2
+                  model: host-passthrough
+                memory:
+                  guest: "4Gi"
+                devices:
+                  networkInterfaceMultiqueue: true
+                  # blockMultiQueue: expose one virtio-blk queue per vCPU so
+                  # the guest can parallelise disk submission across cores.
+                  blockMultiQueue: true
+                  disks:
+                    - disk:
+                        bus: virtio
+                      name: boot
+                      # writeback: cache guest reads/writes in the virt-launcher
+                      # host page cache instead of O_DIRECT to the Ceph RBD
+                      # backing store. Default (none) makes every guest disk
+                      # access a synchronous RBD network round-trip, which
+                      # stalls boot-from-disk for minutes. E2E VMs are
+                      # disposable, so the writeback crash-consistency tradeoff
+                      # is acceptable.
+                      cache: writeback
+                      dedicatedIOThread: true
+                  interfaces:
+                    - name: default
+                      model: virtio
+                      bridge: {}
+              networks:
+                - name: default
+                  multus:
+                    default: true
+                    networkName: vlan200
+              evictionStrategy: External
+              volumes:
+                - name: boot
+                  # ephemeral: a per-VM local qcow2 overlay backed by the shared
+                  # read-only golden root PVC (cephfs, RWX). All node VMs mount
+                  # the same golden PVC read-only and write only to their
+                  # disposable overlay, so there is no per-machine CDI clone
+                  # (the clone was the multi-minute boot stall) and the golden
+                  # image is read once and page-cached. Overlay is discarded on
+                  # VMI stop, which is fine: E2E VMs never restart mid-run.
+                  ephemeral:
+                    persistentVolumeClaim:
+                      claimName: "${GOLDEN_ROOT_PVC}"
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+     spec:
+       postKubeadmCommands:
+         - echo success > /run/cluster-api/bootstrap-success.complete
+       joinConfiguration:
+         nodeRegistration:
+           criSocket: "${CRI_PATH}"
+           kubeletExtraArgs:
+             node-labels: "zfs-csi.randomvariable.co.uk/consumer-group=workers-a,topology.zfs.csi.randomvariable.co.uk/network-domain=${CONSUMER_NETWORK_DOMAIN}"
+---
+# Storage owner A: independent run-owned blank pool disk. Pool GUID remains a
+# live discovery result and is never encoded in this template.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-storage-a"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: 1
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-a
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          name: "${CLUSTER_NAME}-storage-a"
+          namespace: "${NAMESPACE}"
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+      infrastructureRef:
+        name: "${CLUSTER_NAME}-storage-a"
+        namespace: "${NAMESPACE}"
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+        kind: KubevirtMachineTemplate
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: KubevirtMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-a"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      virtualMachineBootstrapCheck:
+        checkStrategy: ssh
+      virtualMachineTemplate:
+        metadata:
+          namespace: "${NAMESPACE}"
+        spec:
+          dataVolumeTemplates:
+            - metadata:
+                name: "tank-a"
+                labels:
+                  app.kubernetes.io/name: zfs-csi-e2e
+                  app.kubernetes.io/managed-by: ginkgo-e2e
+                  zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+              spec:
+                source:
+                  blank: {}
+                pvc:
+                  accessModes:
+                    - ReadWriteOnce
+                  volumeMode: Block
+                  resources:
+                    requests:
+                      storage: "${DATA_DISK_SIZE}"
+                  storageClassName: "${DATA_DISK_STORAGE_CLASS}"
+          runStrategy: Always
+          template:
+            spec:
+              domain:
+                ioThreadsPolicy: auto
+                cpu:
+                  cores: 4
+                  model: host-passthrough
+                memory:
+                  guest: "8Gi"
+                devices:
+                  networkInterfaceMultiqueue: true
+                  # blockMultiQueue: expose one virtio-blk queue per vCPU so
+                  # the guest can parallelise disk submission across cores.
+                  blockMultiQueue: true
+                  disks:
+                    - disk:
+                        bus: virtio
+                      name: boot
+                      cache: writeback
+                      dedicatedIOThread: true
+                    # Serial belongs on pool disk, not boot disk. Guest identity
+                    # is deterministic regardless of virtio enumeration order.
+                    - disk:
+                        bus: virtio
+                      name: tank-a
+                      serial: tank-a
+                      cache: writeback
+                      dedicatedIOThread: true
+                  interfaces:
+                    - name: default
+                      model: virtio
+                      bridge: {}
+              networks:
+                - name: default
+                  multus:
+                    default: true
+                    networkName: vlan200
+              evictionStrategy: External
+              volumes:
+                - name: boot
+                  # ephemeral: a per-VM local qcow2 overlay backed by the shared
+                  # read-only golden root PVC (cephfs, RWX). All node VMs mount
+                  # the same golden PVC read-only and write only to their
+                  # disposable overlay, so there is no per-machine CDI clone
+                  # (the clone was the multi-minute boot stall) and the golden
+                  # image is read once and page-cached. Overlay is discarded on
+                  # VMI stop, which is fine: E2E VMs never restart mid-run.
+                  ephemeral:
+                    persistentVolumeClaim:
+                      claimName: "${GOLDEN_ROOT_PVC}"
+                - dataVolume:
+                    name: "tank-a"
+                  name: tank-a
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-a"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      postKubeadmCommands:
+        - echo success > /run/cluster-api/bootstrap-success.complete
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: "${CRI_PATH}"
+          kubeletExtraArgs:
+            node-labels: "zfs.csi.randomvariable.co.uk/storage-owner=storage-a"
+            register-with-taints: "zfs.csi.randomvariable.co.uk/storage=true:NoSchedule"
+---
+# Storage owner B mirrors owner A but has independent Machine/provider objects
+# and its own deterministic pool-disk identity.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-storage-b"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: 1
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-b
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          name: "${CLUSTER_NAME}-storage-b"
+          namespace: "${NAMESPACE}"
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+      infrastructureRef:
+        name: "${CLUSTER_NAME}-storage-b"
+        namespace: "${NAMESPACE}"
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+        kind: KubevirtMachineTemplate
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: KubevirtMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-b"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      virtualMachineBootstrapCheck:
+        checkStrategy: ssh
+      virtualMachineTemplate:
+        metadata:
+          namespace: "${NAMESPACE}"
+        spec:
+          dataVolumeTemplates:
+            - metadata:
+                name: "tank-b"
+                labels:
+                  app.kubernetes.io/name: zfs-csi-e2e
+                  app.kubernetes.io/managed-by: ginkgo-e2e
+                  zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+              spec:
+                source:
+                  blank: {}
+                pvc:
+                  accessModes:
+                    - ReadWriteOnce
+                  volumeMode: Block
+                  resources:
+                    requests:
+                      storage: "${DATA_DISK_SIZE}"
+                  storageClassName: "${DATA_DISK_STORAGE_CLASS}"
+          runStrategy: Always
+          template:
+            spec:
+              domain:
+                ioThreadsPolicy: auto
+                cpu:
+                  cores: 4
+                  model: host-passthrough
+                memory:
+                  guest: "8Gi"
+                devices:
+                  networkInterfaceMultiqueue: true
+                  blockMultiQueue: true
+                  disks:
+                    - disk:
+                        bus: virtio
+                      name: boot
+                      cache: writeback
+                      dedicatedIOThread: true
+                    - disk:
+                        bus: virtio
+                      name: tank-b
+                      serial: tank-b
+                      cache: writeback
+                      dedicatedIOThread: true
+                  interfaces:
+                    - name: default
+                      model: virtio
+                      bridge: {}
+              networks:
+                - name: default
+                  multus:
+                    default: true
+                    networkName: vlan200
+              evictionStrategy: External
+              volumes:
+                - name: boot
+                  ephemeral:
+                    persistentVolumeClaim:
+                      claimName: "${GOLDEN_ROOT_PVC}"
+                - dataVolume:
+                    name: "tank-b"
+                  name: tank-b
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-b"
+  namespace: "${NAMESPACE}"
+  labels: &ownershipLabels
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      postKubeadmCommands:
+        - echo success > /run/cluster-api/bootstrap-success.complete
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: "${CRI_PATH}"
+          kubeletExtraArgs:
+            node-labels: "zfs.csi.randomvariable.co.uk/storage-owner=storage-b"
+            register-with-taints: "zfs.csi.randomvariable.co.uk/storage=true:NoSchedule"
+# CNI is installed by the E2E framework via CNIManifestPath (vendored, pinned
+# Calico) after control-plane init, before the node-ready waits. The Calico
+# node DaemonSet tolerates all taints, so it reaches the tainted storage node.

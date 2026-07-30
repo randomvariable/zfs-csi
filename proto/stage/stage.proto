@@ -1,0 +1,127 @@
+// Copyright 2026 Naadir Jeewa
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package stage.v1alpha1;
+
+option go_package = "github.com/randomvariable/zfs-csi/internal/stagepb/stage;stage";
+
+// StagePlugin is the synchronous node-local gRPC contract between the CSI node
+// driver (router) and a transport-specific stage sidecar (nvmet, nfs, future
+// ceph/lvm). It mirrors CSI's own NodeStage/NodeUnstage semantics but over a
+// node-local unix socket so the synchronous hot path has no apiserver hop.
+//
+// A plugin owns the device-acquisition + filesystem-mount machine for one
+// transport kind. The node driver routes by transport kind (publishContext) to
+// the matching plugin socket.
+service StagePlugin {
+  // PluginInfo identifies the plugin + its supported transport kind, used by the
+  // node driver for socket discovery / capability advertisement.
+  rpc PluginInfo(PluginInfoRequest) returns (PluginInfoResponse);
+
+  // NodeStage attaches (if needed), formats (if needed), and mounts the backing
+  // device at staging_path. Idempotent: re-staging an already-staged path is a
+  // fast success.
+  rpc NodeStage(NodeStageRequest) returns (NodeStageResponse);
+
+  // NodeUnstage unmounts and detaches (if needed). Idempotent: unstaging an
+  // already-clean path is a fast success.
+  rpc NodeUnstage(NodeUnstageRequest) returns (NodeUnstageResponse);
+}
+
+message PluginInfoRequest {}
+
+message PluginInfoResponse {
+  // name is the plugin identifier (e.g. "nvmet", "nfs").
+  string name = 1;
+  // vendor_version of the plugin binary.
+  string vendor_version = 2;
+  // manifest of optional opaque metadata.
+  map<string, string> manifest = 3;
+}
+
+message NodeStageRequest {
+  // staging_path is the CSI staging_target_path (the mount target).
+  string staging_path = 1;
+  // fs_type for block sources (ext4|xfs|nfs4). Empty = plugin default.
+  string fs_type = 2;
+  // mount_flags are extra mount options.
+  repeated string mount_flags = 3;
+  // read_only mounts the staging path read-only.
+  bool read_only = 4;
+  // block requests raw-block staging: the plugin attaches the device and binds
+  // the /dev node onto staging_path (a regular file), skipping format + fs
+  // mount. fs_type is ignored when block is true.
+  bool block = 5;
+  // source is the backing-device union. Exactly one variant per request.
+  oneof source {
+    NVMeSource nvme = 10;
+    DeviceSource device = 11;
+    NFSSource nfs = 12;
+  }
+}
+
+// NVMeSource drives an nvme-tcp attach (transport.Client.Attach) before format +
+// mount. Fields mirror transport.TargetRef + the initiator id.
+message NVMeSource {
+  string target_nqn = 1;
+  string portal = 2;
+  int32 namespace_id = 3;
+  string device_guid = 4;
+  string initiator_id = 5;
+  // tls selects the TLS NVMe/TCP target identified by portal.
+  bool tls = 6;
+  // psk_secret is the configured Kubernetes Secret NAME only. Stage sidecars
+  // may use it for node-local credential delivery; raw PSK material never
+  // crosses this RPC.
+  string psk_secret = 7;
+}
+
+// DeviceSource is a pre-attached raw block device (/dev/rbdX, /dev/mapper/...).
+// The plugin skips attach; format + mount only. Generic escape hatch for
+// providers that map their own device.
+message DeviceSource {
+  string path = 1;
+}
+
+// NFSSource mounts a remote export (server:exportPath). No attach, no format.
+message NFSSource {
+  string server = 1;
+  string export_path = 2;
+  // tls selects RFC 9289 mutually-authenticated NFS-over-TLS. The plugin adds xprtsec=mtls and rejects
+  // a conflicting caller-supplied xprtsec option.
+  bool tls = 3;
+}
+
+message NodeStageResponse {
+  // device_path is the resolved /dev node for block sources (e.g.
+  // /dev/nvme1n1). Empty for nfs.
+  string device_path = 1;
+}
+
+message NodeUnstageRequest {
+  string staging_path = 1;
+  // source mirrors NodeStageRequest.source so the plugin knows whether to
+  // detach (nvme) or not (device/nfs).
+  oneof source {
+    NVMeSource nvme = 10;
+    DeviceSource device = 11;
+    NFSSource nfs = 12;
+  }
+}
+
+message NodeUnstageResponse {}

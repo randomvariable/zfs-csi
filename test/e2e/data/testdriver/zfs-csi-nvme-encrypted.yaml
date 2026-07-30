@@ -1,0 +1,84 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# External-storage conformance testdriver for the zfs-csi NVMe-TCP (block, RWO)
+# path with per-volume ZFS native encryption. Identical to zfs-csi-nvme.yaml
+# except it targets the zfs-tank-nvme-encrypted StorageClass (encrypted="true"),
+# so the full external-storage matrix (provision, resize, snapshot, clone, raw
+# block, fsgroup) runs end-to-end against encrypted datasets: the controller
+# generates a DEK via OpenBao Transit, the storage agent creates the dataset with
+# encryption=on, and the DEK is crypto-shredded on delete.
+#
+# This testdriver is only registered when the lane runs with encryption enabled
+# (E2E_ENCRYPTION!=0), which is what deploys OpenBao and renders the encrypted
+# StorageClass. See test/e2e/capi_lifecycle_test.go.
+#
+# NAME is deliberately synthetic (`...-nvme-encrypted`) and DISTINCT from the
+# plain NVMe + NFS testdrivers: the external suite keys its test tree by
+# DriverInfo.Name, so a shared name would collapse drivers into one ambiguous
+# tree with duplicate JUnit testcase names. The real provisioner comes from the
+# StorageClass (FromExistingClassName), not this Name.
+StorageClass:
+  # The chart-installed encrypted SC: same params as zfs-tank-nvme plus
+  # encrypted="true". Only exists when the chart is installed with
+  # encryption.enabled=true (gated on E2E_ENCRYPTION).
+  FromExistingClassName: zfs-tank-nvme-encrypted
+SnapshotClass:
+  # Shared with the plain NVMe driver: snapshots of an encrypted dataset are
+  # themselves encrypted (ZFS snapshots inherit the dataset's encryption).
+  FromExistingClassName: zfs-tank-snapclass
+VolumeAttributesClass:
+  # Compression is mutable on encrypted ZFS datasets too, so this enables the
+  # same ControllerModifyVolume coverage as the unencrypted NVMe testdriver.
+  FromExistingClassName: zfs-csi-e2e-compression-zstd-3
+DriverInfo:
+  Name: zfs.csi.randomvariable.co.uk-nvme-encrypted
+  # Imports use bespoke static PVs in the dedicated lifecycle scenario, not
+  # upstream's generic preprovisioned-volume adapter.
+  PreprovisionedPV: false
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 16Gi
+  SupportedFsType:
+    ext4: {}
+    xfs: {}
+  Capabilities:
+    persistence: true
+    block: true                # raw block over NVMe-TCP (proven, #59)
+    exec: true
+    multipods: false
+    RWX: false
+    controllerExpansion: true
+    nodeExpansion: true
+    onlineExpansion: true
+    offlineExpansion: true
+    pvcDataSource: true        # zfs clone of an encrypted dataset (inherits key)
+    snapshotDataSource: true   # snapshot + restore of an encrypted dataset
+    topology: false
+    # Upstream volumeLimits assumes every Ready schedulable node has this CSI
+    # driver. Selective deployments use the dedicated scheduler limit scenario.
+    volumeLimits: false
+    capacity: true
+    readWriteOncePod: true
+    singleNodeVolume: false
+  # External-storage applies this default mode set to every generated claim.
+  # Keep broad suites on RWO; the advertised RWOP capability enables the
+  # dedicated upstream RWOP suite, which creates an RWOP-only claim itself.
+  RequiredAccessModes:
+    - ReadWriteOnce
+  StressTestOptions:
+    NumPods: 4
+    NumRestarts: 3

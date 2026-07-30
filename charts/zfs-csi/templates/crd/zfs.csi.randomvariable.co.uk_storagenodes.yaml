@@ -1,0 +1,247 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: storagenodes.zfs.csi.randomvariable.co.uk
+spec:
+  group: zfs.csi.randomvariable.co.uk
+  names:
+    kind: StorageNode
+    listKind: StorageNodeList
+    plural: storagenodes
+    shortNames:
+    - zsn
+    singular: storagenode
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: StorageNode advertises storage inventory for one Kubernetes Node.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: StorageNodeSpec contains operator-owned storage-node identity
+              and policy.
+            properties:
+              authoritativePoolGUIDs:
+                description: authoritativePoolGUIDs is the immutable complete set
+                  of ZFS pool GUIDs owned by this logical storage node.
+                items:
+                  maxLength: 20
+                  pattern: ^[1-9][0-9]{0,19}$
+                  type: string
+                maxItems: 32
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+                x-kubernetes-validations:
+                - message: pool GUIDs must be canonical non-zero decimal uint64 values
+                  rule: self.all(x, uint(x) > 0 && string(uint(x)) == x)
+                - message: authoritativePoolGUIDs is immutable
+                  rule: self == oldSelf
+              enabled:
+                default: true
+                description: enabled controls whether this storage node is eligible.
+                type: boolean
+              networkDomain:
+                description: networkDomain identifies one worker/storage reachability
+                  domain.
+                maxLength: 63
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: networkDomain must be a valid Kubernetes label value
+                  rule: self.matches('^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$')
+            required:
+            - authoritativePoolGUIDs
+            - networkDomain
+            type: object
+          status:
+            description: StorageNodeStatus contains storage-agent-owned observations.
+            properties:
+              conditions:
+                description: conditions carries inventory health.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              endpoints:
+                description: endpoints is the complete set of owner-local serving
+                  endpoints.
+                items:
+                  description: |-
+                    StorageNodeEndpoint is one owner-local serving address. Host and port remain
+                    separate so IPv6 is rendered only with net.JoinHostPort at use boundaries.
+                  properties:
+                    host:
+                      description: host is a DNS name or unbracketed IPv4/IPv6 literal
+                        without a port.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    port:
+                      description: port is the TCP service port.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    protocol:
+                      description: protocol identifies the serving protocol.
+                      enum:
+                      - nfs
+                      - nvme-tcp
+                      type: string
+                  required:
+                  - host
+                  - port
+                  - protocol
+                  type: object
+                maxItems: 16
+                minItems: 2
+                type: array
+                x-kubernetes-list-map-keys:
+                - protocol
+                - host
+                - port
+                x-kubernetes-list-type: map
+              lastObservedTime:
+                description: lastObservedTime is timestamp of complete observation
+                  attempt.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: observedGeneration is spec generation observed by storage
+                  agent.
+                format: int64
+                type: integer
+              pools:
+                description: pools is complete replacement inventory keyed by stable
+                  pool GUID.
+                items:
+                  description: StorageNodePoolStatus is one completely observed ZFS
+                    pool.
+                  properties:
+                    capacityObservedAt:
+                      description: capacityObservedAt identifies the pool-free sample
+                        used for placement accounting.
+                      format: date-time
+                      type: string
+                    freeBytes:
+                      description: freeBytes is observed pool free space.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    guid:
+                      description: guid is the canonical nonzero decimal ZFS pool
+                        GUID.
+                      minLength: 1
+                      type: string
+                    name:
+                      description: name is the raw node-local ZFS pool name.
+                      minLength: 1
+                      type: string
+                    ready:
+                      description: ready is true only for an ONLINE pool.
+                      type: boolean
+                  required:
+                  - capacityObservedAt
+                  - freeBytes
+                  - guid
+                  - name
+                  - ready
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - guid
+                x-kubernetes-list-type: map
+              reachableFrom:
+                description: |-
+                  reachableFrom is the complete set of consumer network domains able to
+                  reach every published endpoint on this storage owner.
+                items:
+                  type: string
+                maxItems: 32
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

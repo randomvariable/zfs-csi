@@ -1,0 +1,374 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zfs-csi-controller
+  namespace: {{ include "zfs-csi.namespace" . }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zfs-csi-storage
+  namespace: {{ include "zfs-csi.namespace" . }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zfs-csi-node
+  namespace: {{ include "zfs-csi.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zfs-csi-controller
+rules:
+  - apiGroups: [""]
+    # persistentvolumes needs "delete": the external-provisioner deletes the PV
+    # object itself when reclaimPolicy: Delete drives a Released PV through
+    # DeleteVolume. Without it the PV wedges in Released forever (caught by
+    # storage conformance; the smokes never deleted their PVCs).
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    # pods: the external-resizer's online-expansion path lists the pods using a
+    # PVC to coordinate NodeExpandVolume; without it the resizer logs "cannot list
+    # resource pods" and the resize stalls ("Waiting for cloudprovider resize to
+    # finish"). (Bug WW, conformance-exposed.)
+    # configmaps: the storage-agent capacity Publisher writes pool free bytes to
+    # a ConfigMap and the controller GetCapacity reads it (both run under this SA
+    # in the single controller pod). Namespace-scoped in practice via the driver
+    # namespace, but the ClusterRole grants the verbs.
+    resources: ["persistentvolumeclaims", "pods", "nodes", "events", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # external-provisioner --enable-capacity with --capacity-ownerref-level=2 walks
+  # the pod's owner chain (Pod -> ReplicaSet -> Deployment) to own its
+  # CSIStorageCapacity objects. Level 2 short-circuits on the ReplicaSet's own
+  # ownerRef (no Deployment GET), but it MUST GET the ReplicaSet itself. Without
+  # this the owner lookup fails and external-provisioner klog.Fatal's,
+  # crash-looping the sidecar and halting ALL provisioning.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get"]
+  # controller-runtime's v2 recorder writes events.k8s.io/v1 Events. Keep the
+  # core Event rule above for CSI sidecars that still use the legacy API.
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+  # persistentvolumeclaims/status is a DISTINCT RBAC resource from
+  # persistentvolumeclaims (same split as volumeattachments/status below). The
+  # external-resizer marks a PVC as resizing by patching its status subresource;
+  # without this it loops "cannot patch resource persistentvolumeclaims/status"
+  # and the expansion never completes ("Waiting for cloudprovider resize to
+  # finish"). (Bug XX, conformance-exposed.)
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments", "storageclasses", "csinodes", "csidrivers", "csistoragecapacities"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # VolumeAttributesClass is controller input only. Keep it separate from the
+  # mutable attachment rule so the resizer has least-privilege read access.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattributesclasses"]
+    verbs: ["get", "list", "watch"]
+  # The external-attacher writes the attach result to the volumeattachments
+  # STATUS subresource, which RBAC treats as a distinct resource from
+  # volumeattachments itself. Without this the ControllerPublish succeeds but the
+  # attacher loops on "cannot patch resource volumeattachments/status", so the VA
+  # never flips to attached=true and pods stay stuck in ContainerCreating.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots", "volumesnapshotcontents", "volumesnapshotclasses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # csi-snapshotter patches the /status subresource of VolumeSnapshotContent
+  # (distinct RBAC resource from volumesnapshotcontents itself).
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["zfs.csi.randomvariable.co.uk"]
+    resources: ["volumes", "volumes/status", "snapshots", "snapshots/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # VolumeImport is an administrator-created trust boundary. Runtime identities
+  # may observe intent and write status, but cannot create or delete imports.
+  - apiGroups: ["zfs.csi.randomvariable.co.uk"]
+    resources: ["volumeimports"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["zfs.csi.randomvariable.co.uk"]
+    resources: ["volumeimports/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["zfs.csi.randomvariable.co.uk"]
+    resources: ["storagenodes"]
+    verbs: ["get", "list", "watch"]
+  # Leader election: the driver's controller-runtime manager AND the external
+  # CSI sidecars (provisioner/attacher/resizer) — all running under the
+  # zfs-csi-controller ServiceAccount — acquire a coordination.k8s.io Lease.
+  # Without this the controller loops on "leases ... is forbidden" and never
+  # becomes leader, so no volume is ever provisioned.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zfs-csi-storage
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  - apiGroups: ["zfs.csi.randomvariable.co.uk"]
+    resources: ["storagenodes"]
+    verbs: ["get"]
+  - apiGroups: ["zfs.csi.randomvariable.co.uk"]
+    resources: ["storagenodes/status"]
+    verbs: ["update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zfs-csi-node
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+# nvmet-controller manages NVMeExport CRs (nvmet.randomvariable.co.uk group).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nvmet-controller
+rules:
+  - apiGroups: ["nvmet.randomvariable.co.uk"]
+    resources: ["nvmeexports", "nvmeexports/status", "nvmeexports/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nvmet-controller
+  namespace: {{ include "zfs-csi.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nvmet-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nvmet-controller
+subjects:
+  - kind: ServiceAccount
+    name: nvmet-controller
+    namespace: {{ include "zfs-csi.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zfs-csi-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zfs-csi-controller
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-controller
+    namespace: {{ include "zfs-csi.namespace" . }}
+  - kind: ServiceAccount
+    name: zfs-csi-storage
+    namespace: {{ include "zfs-csi.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zfs-csi-storage
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zfs-csi-storage
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-storage
+    namespace: {{ include "zfs-csi.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zfs-csi-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zfs-csi-node
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-node
+    namespace: {{ include "zfs-csi.namespace" . }}
+---
+# Controller creates and directly re-reads deterministic immutable NVMe TLS
+# PSK Secrets only in the driver namespace. No list/watch/update/delete grant:
+# storage agent performs terminal cleanup after backend destruction is provable.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zfs-csi-nvme-tls-psk-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zfs-csi-nvme-tls-psk-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zfs-csi-nvme-tls-psk-secrets
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-controller
+    namespace: {{ include "zfs-csi.namespace" . }}
+---
+# Storage agents directly read and Delete-policy clean up controller-created
+# immutable NVMe TLS PSKs. Kubernetes cannot resource-name scope a
+# dynamically-derived Secret name, so grant only get/delete.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zfs-csi-storage-nvme-tls-psk-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zfs-csi-storage-nvme-tls-psk-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zfs-csi-storage-nvme-tls-psk-secrets
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-storage
+    namespace: {{ include "zfs-csi.namespace" . }}
+---
+# nvmet-stage reads a controller-created PSK by its deterministic name before
+# attaching a TLS controller. Dynamic names cannot use resourceNames.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zfs-csi-node-nvme-tls-psk-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zfs-csi-node-nvme-tls-psk-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zfs-csi-node-nvme-tls-psk-secrets
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-node
+    namespace: {{ include "zfs-csi.namespace" . }}
+{{- if .Values.network.tls.enabled }}
+{{- $tlsLeafOwners := .Values.storageOwners }}
+{{- if and (eq (len $tlsLeafOwners) 0) .Values.storage.enabled }}
+{{- $legacyOwner := required "storageNode.name is required when TLS is enabled without storageOwners" .Values.storageNode.name }}
+{{- $tlsLeafOwners = list (dict "name" $legacyOwner) }}
+{{- end }}
+{{- $tlsLeafNames := list }}
+{{- range $owner := $tlsLeafOwners }}
+{{- $enabled := true }}
+{{- if hasKey $owner "enabled" }}{{- $enabled = $owner.enabled }}{{- end }}
+{{- if $enabled }}{{- $tlsLeafNames = append $tlsLeafNames (include "zfs-csi.tlsServerSecretName" $owner.name) }}{{- end }}
+{{- end }}
+---
+# Storage agents use direct reads for the certificate-only CA and their own
+# owner-specific server leaf. Signer owns all authority writes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zfs-csi-nfs-tls-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - zfs-csi-tls-ca-public
+{{- range $name := $tlsLeafNames }}
+      - {{ $name | quote }}
+{{- end }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zfs-csi-nfs-tls-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zfs-csi-nfs-tls-secrets
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-storage
+    namespace: {{ include "zfs-csi.namespace" . }}
+---
+# Kubelet projects node-bound client credentials; node pods only read public CA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zfs-csi-node-nfs-tls-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["zfs-csi-tls-ca-public"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zfs-csi-node-nfs-tls-secrets
+  namespace: {{ include "zfs-csi.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zfs-csi-node-nfs-tls-secrets
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-node
+    namespace: {{ include "zfs-csi.namespace" . }}
+{{- end }}

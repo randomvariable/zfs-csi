@@ -1,0 +1,89 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Publishes the MkDocs (Material) documentation site to GitHub Pages.
+#
+# Application CI runs on Tekton; this GitHub Actions workflow is scoped to the
+# documentation site only. It builds with `mkdocs build --strict` (the same gate
+# as `mage docs:build`) on every push and pull request, and deploys to Pages on
+# pushes to the default branch.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Least-privilege by default; the deploy job elevates to what Pages needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MkDocs Material
+        # Pinned to the same version as .tools.yaml and netlify.toml so every
+        # build path renders identically.
+        run: pip install "mkdocs-material==9.7.6"
+
+      - name: Build the site (strict)
+        run: mkdocs build --strict
+
+      - name: Upload the Pages artifact
+        # Only the default-branch push needs the artifact for deployment.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # Deploy only on pushes to the default branch, after a green build.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

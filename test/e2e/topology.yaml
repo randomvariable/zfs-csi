@@ -1,0 +1,184 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: e2e.zfs-csi.randomvariable.co.uk/v1alpha1
+kind: KubeVirtTopologyContract
+metadata:
+  name: zfs-csi-kubevirt-e2e
+spec:
+  substrate:
+    target: kubevirt
+  fabric:
+    lane: single-node-l2-local
+    network: multus-linux-bridge
+    crossNode: deferred
+    addressFamilies:
+      - ipv4
+    ipv6: endpoint-inputs-defined
+  images:
+    root:
+      goldenDataSource: ubuntu-2404-kube-v1.36.2
+      perRunClones: true
+      cloneCapableStorageClass: required
+    containerDisk:
+      usage: boot-only-smoke
+      bootOnly: true
+  capi:
+    lifecycle: capk-managed-kubeadm
+    readiness:
+      - infrastructure-ready
+      - control-plane-ready
+      - workers-ready
+      - kubeconfig-secret-ready
+      - cluster-mutation-ready
+    kubeconfigRetrieval: capi-cluster-kubeconfig-secret
+  teardown:
+    ownershipLabels:
+      app.kubernetes.io/name: zfs-csi-e2e
+      app.kubernetes.io/managed-by: ginkgo-e2e
+      zfs-csi.randomvariable.co.uk/run-id: required
+  nodes:
+    - name: cp0
+      hostname: cp0
+      joinRole: control-plane
+      arch: amd64
+      machineType: q35
+      resources: {vcpu: 4, memoryMiB: 8192}
+      interfaces:
+        management: {address: 10.19.0.10/24, mac: "52:54:00:19:00:10"}
+        fabric: {address: 10.19.1.10/24, mac: "52:54:00:19:01:10", mtu: 9000}
+      disks:
+        root: {size: 30Gi, source: datasource-clone}
+      labels: {zfs-csi.randomvariable.co.uk/e2e-role: control-plane}
+      taints: []
+      placement: {lane: single-kubevirt-node}
+      readiness: [vmi-ready, ssh-ready, cloud-init-complete, kubeadm-init-complete, kubeconfig-readable]
+    - name: storage-a
+      hostname: storage-a
+      joinRole: worker
+      arch: amd64
+      machineType: q35
+      resources: {vcpu: 4, memoryMiB: 8192}
+      interfaces:
+        management: {address: 10.19.0.20/24, mac: "52:54:00:19:00:20"}
+        fabric: {address: 10.19.1.20/24, mac: "52:54:00:19:01:20", mtu: 9000}
+      disks:
+        root: {size: 40Gi, source: datasource-clone}
+        data:
+          - {name: tank-a, serial: tank-a, deviceID: /dev/disk/by-id/virtio-tank-a, size: 20Gi, pool: tank, ownership: run}
+      labels:
+        zfs-csi.randomvariable.co.uk/e2e-role: storage
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-a
+      taints:
+        - {key: zfs.csi.randomvariable.co.uk/storage, value: "true", effect: NoSchedule}
+      placement: {lane: single-kubevirt-node}
+      discovery:
+        machineDeploymentSuffix: storage-a
+        endpointFamilies: [ipv4]
+        poolGUID: dynamic-zpool-get
+      readiness: [vmi-ready, ssh-ready, cloud-init-complete, zfs-ready, nvmet-ready, nfs-ready, kubeadm-joined]
+    - name: storage-b
+      hostname: storage-b
+      joinRole: worker
+      arch: amd64
+      machineType: q35
+      resources: {vcpu: 4, memoryMiB: 8192}
+      interfaces:
+        management: {address: 10.19.0.21/24, mac: "52:54:00:19:00:21"}
+        fabric: {address: 10.19.1.21/24, mac: "52:54:00:19:01:21", mtu: 9000}
+      disks:
+        root: {size: 40Gi, source: datasource-clone}
+        data:
+          - {name: tank-b, serial: tank-b, deviceID: /dev/disk/by-id/virtio-tank-b, size: 20Gi, pool: tank, ownership: run}
+      labels:
+        zfs-csi.randomvariable.co.uk/e2e-role: storage
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-b
+      taints:
+        - {key: zfs.csi.randomvariable.co.uk/storage, value: "true", effect: NoSchedule}
+      placement: {lane: single-kubevirt-node}
+      discovery:
+        machineDeploymentSuffix: storage-b
+        endpointFamilies: [ipv4]
+        poolGUID: dynamic-zpool-get
+      readiness: [vmi-ready, ssh-ready, cloud-init-complete, zfs-ready, nvmet-ready, nfs-ready, kubeadm-joined]
+    - name: worker-a0
+      hostname: worker-a0
+      joinRole: worker
+      arch: amd64
+      machineType: q35
+      resources: {vcpu: 2, memoryMiB: 4096}
+      interfaces:
+        management: {address: 10.19.0.30/24, mac: "52:54:00:19:00:30"}
+        fabric: {address: 10.19.1.30/24, mac: "52:54:00:19:01:30", mtu: 9000}
+      disks:
+        root: {size: 30Gi, source: datasource-clone}
+      labels:
+        zfs-csi.randomvariable.co.uk/e2e-role: worker
+        topology.zfs.csi.randomvariable.co.uk/network-domain: fabric-a
+      taints: []
+      placement: {lane: single-kubevirt-node}
+      readiness: [vmi-ready, ssh-ready, cloud-init-complete, nvme-initiator-ready, nfs-client-ready, kubeadm-joined]
+    - name: worker-a1
+      hostname: worker-a1
+      joinRole: worker
+      arch: amd64
+      machineType: q35
+      resources: {vcpu: 2, memoryMiB: 4096}
+      interfaces:
+        management: {address: 10.19.0.31/24, mac: "52:54:00:19:00:31"}
+        fabric: {address: 10.19.1.31/24, mac: "52:54:00:19:01:31", mtu: 9000}
+      disks:
+        root: {size: 30Gi, source: datasource-clone}
+      labels:
+        zfs-csi.randomvariable.co.uk/e2e-role: worker
+        topology.zfs.csi.randomvariable.co.uk/network-domain: fabric-a
+      taints: []
+      placement: {lane: single-kubevirt-node}
+      readiness: [vmi-ready, ssh-ready, cloud-init-complete, nvme-initiator-ready, nfs-client-ready, kubeadm-joined]
+    - name: worker-b0
+      hostname: worker-b0
+      joinRole: worker
+      arch: amd64
+      machineType: q35
+      resources: {vcpu: 2, memoryMiB: 4096}
+      interfaces:
+        management: {address: 10.19.0.32/24, mac: "52:54:00:19:00:32"}
+        fabric: {address: 10.19.1.32/24, mac: "52:54:00:19:01:32", mtu: 9000}
+      disks:
+        root: {size: 30Gi, source: datasource-clone}
+      labels:
+        zfs-csi.randomvariable.co.uk/e2e-role: worker
+        topology.zfs.csi.randomvariable.co.uk/network-domain: fabric-b
+      taints: []
+      placement: {lane: single-kubevirt-node}
+      readiness: [vmi-ready, ssh-ready, cloud-init-complete, nvme-initiator-ready, nfs-client-ready, kubeadm-joined]
+    - name: worker-b1
+      hostname: worker-b1
+      joinRole: worker
+      arch: amd64
+      machineType: q35
+      resources: {vcpu: 2, memoryMiB: 4096}
+      interfaces:
+        management: {address: 10.19.0.33/24, mac: "52:54:00:19:00:33"}
+        fabric: {address: 10.19.1.33/24, mac: "52:54:00:19:01:33", mtu: 9000}
+      disks:
+        root: {size: 30Gi, source: datasource-clone}
+      labels:
+        zfs-csi.randomvariable.co.uk/e2e-role: worker
+        topology.zfs.csi.randomvariable.co.uk/network-domain: fabric-b
+      taints: []
+      placement: {lane: single-kubevirt-node}
+      readiness: [vmi-ready, ssh-ready, cloud-init-complete, nvme-initiator-ready, nfs-client-ready, kubeadm-joined]

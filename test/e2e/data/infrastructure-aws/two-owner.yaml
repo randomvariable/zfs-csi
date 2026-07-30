@@ -1,0 +1,46 @@
+# Copyright 2026 Naadir Jeewa
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: e2e.zfs-csi.randomvariable.co.uk/v1alpha1
+kind: InfrastructureConfig
+metadata:
+  name: aws-two-owner
+spec:
+  provider: aws
+  flavor: zfs-csi-aws
+  addressFamilies: [ipv4, ipv6]
+  storageOwners:
+    - name: storage-a
+      machineDeploymentSuffix: storage-a
+      nodeSelector:
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-a
+      pool:
+        name: tank
+        diskID: storage-a-data
+        discovery:
+          provider: aws-ebs-volume-id
+          attachmentDeviceName: /dev/xvdb
+      networkDomain: fabric-a
+      endpoints:
+        nfs: {ipv4: discovered-storage-a-private-ipv4, ipv6: discovered-storage-a-private-ipv6, port: 2049}
+        nvme: {ipv4: discovered-storage-a-private-ipv4, ipv6: discovered-storage-a-private-ipv6, port: 4420}
+    - name: storage-b
+      machineDeploymentSuffix: storage-b
+      nodeSelector:
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-b
+      pool:
+        name: tank
+        diskID: storage-b-data
+        discovery:
+          provider: aws-ebs-volume-id
+          attachmentDeviceName: /dev/xvdb
+      networkDomain: fabric-a
+      endpoints:
+        nfs: {ipv4: discovered-storage-b-private-ipv4, ipv6: discovered-storage-b-private-ipv6, port: 2049}
+        nvme: {ipv4: discovered-storage-b-private-ipv4, ipv6: discovered-storage-b-private-ipv6, port: 4420}
+  consumerWorkers:
+    - name: workers-a
+      machineDeploymentSuffix: md-0
+      nodeSelector: {zfs-csi.randomvariable.co.uk/consumer-group: workers-a}
+      replicas: 2
+      networkDomain: fabric-a

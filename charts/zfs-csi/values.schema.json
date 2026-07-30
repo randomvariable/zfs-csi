@@ -1,0 +1,505 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "controller": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/optionalNodeSelector"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "storageOwners": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/definitions/storageOwner"
+      }
+    },
+    "storageNode": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 0
+            },
+            {
+              "$ref": "#/definitions/dnsLabel"
+            }
+          ]
+        },
+        "authoritativePoolGUIDs": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,19}$",
+            "maxLength": 20
+          }
+        },
+        "networkDomain": {
+          "$ref": "#/definitions/labelValue"
+        },
+        "reachableFrom": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/labelValue"
+          }
+        },
+        "selector": {
+          "$ref": "#/definitions/nodeSelector"
+        },
+        "poolMountRoot": {
+          "$ref": "#/definitions/absolutePath"
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "properties": {
+        "nodeSelector": {
+          "$ref": "#/definitions/optionalNodeSelector"
+        },
+        "networkDomainSource": {
+          "type": "string",
+          "enum": [
+            "static",
+            "nodeLabel"
+          ]
+        },
+        "networkDomainLabel": {
+          "$ref": "#/definitions/labelKey"
+        },
+        "networkDomain": {
+          "$ref": "#/definitions/labelValue"
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "portalHost": {
+          "$ref": "#/definitions/hostOrEmpty"
+        },
+        "portalPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "nfsServer": {
+          "$ref": "#/definitions/hostOrEmpty"
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "signingNamespace": {
+              "type": "string",
+              "maxLength": 253,
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+            },
+            "signer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "enabled",
+                "replicas",
+                "metricsBindAddress",
+                "resources",
+                "nodeSelector",
+                "tolerations"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "replicas": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3
+                },
+                "metricsBindAddress": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "resources": {
+                  "type": "object"
+                },
+                "nodeSelector": {
+                  "$ref": "#/definitions/optionalNodeSelector"
+                },
+                "tolerations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            "tlshd": {
+              "type": "object",
+              "properties": {
+                "loglevel": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 7
+                },
+                "extraArgs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "maxItems": 16
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "storageClasses": {
+      "type": "object",
+      "properties": {
+        "defaultClass": {
+          "type": "string",
+          "enum": [
+            "",
+            "tankNVMe",
+            "tankNFS",
+            "tankNFSTLS",
+            "tankNVMeTLS",
+            "flashNVMe",
+            "flashNFS"
+          ],
+          "default": ""
+        },
+        "tankNFS": {
+          "$ref": "#/definitions/nfsStorageClass"
+        },
+        "tankNVMe": {
+          "$ref": "#/definitions/nvmeStorageClass"
+        },
+        "tankNFSDelete": {
+          "$ref": "#/definitions/nfsStorageClass"
+        },
+        "tankNVMeDelete": {
+          "$ref": "#/definitions/nvmeStorageClass"
+        },
+        "tankNFSRetain": {
+          "$ref": "#/definitions/nfsStorageClass"
+        },
+        "tankNVMERetain": {
+          "$ref": "#/definitions/nvmeStorageClass"
+        },
+        "tankNFSTLS": {
+          "$ref": "#/definitions/nfsStorageClass"
+        },
+        "tankNVMeTLS": {
+          "$ref": "#/definitions/nvmeStorageClass"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "labelValue": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$"
+    },
+    "labelKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)$"
+    },
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "dnsLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "not": {
+        "pattern": "[\\[\\]/\\s]"
+      },
+      "anyOf": [
+        {
+          "format": "ipv4"
+        },
+        {
+          "format": "ipv6"
+        },
+        {
+          "pattern": "^[A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?$"
+        }
+      ]
+    },
+    "hostOrEmpty": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 0
+        },
+        {
+          "$ref": "#/definitions/host"
+        }
+      ]
+    },
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^/([^/]+(/[^/]+)*)?$"
+    },
+    "poolGUIDs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[1-9][0-9]{0,19}$",
+        "maxLength": 20
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/definitions/labelKey"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 63,
+        "pattern": "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$"
+      }
+    },
+    "optionalNodeSelector": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/definitions/labelKey"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 63,
+        "pattern": "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$"
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port"
+      ],
+      "properties": {
+        "host": {
+          "$ref": "#/definitions/host"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "nfsEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port"
+      ],
+      "properties": {
+        "host": {
+          "$ref": "#/definitions/host"
+        },
+        "port": {
+          "type": "integer",
+          "const": 2049
+        }
+      }
+    },
+    "nfsStorageClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "name",
+        "pool",
+        "nfsExportCIDRs",
+        "reclaimPolicy"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "$ref": "#/definitions/dnsLabel"
+        },
+        "pool": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nfsExportCIDRs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reclaimPolicy": {
+          "type": "string",
+          "enum": [
+            "Delete",
+            "Retain"
+          ]
+        },
+        "encrypted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "nvmeStorageClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "name",
+        "pool",
+        "fsType",
+        "blocksize",
+        "mountOptions",
+        "reclaimPolicy"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "$ref": "#/definitions/dnsLabel"
+        },
+        "pool": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fsType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocksize": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mountOptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reclaimPolicy": {
+          "type": "string",
+          "enum": [
+            "Delete",
+            "Retain"
+          ]
+        },
+        "encrypted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "storageOwner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "nodeSelector",
+        "authoritativePoolGUIDs",
+        "poolMountRoot",
+        "nfs",
+        "nvme",
+        "networkDomain",
+        "reachableFrom"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/dnsSubdomain"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/nodeSelector"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "authoritativePoolGUIDs": {
+          "$ref": "#/definitions/poolGUIDs"
+        },
+        "poolMountRoot": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "nfs": {
+          "$ref": "#/definitions/nfsEndpoint"
+        },
+        "nvme": {
+          "$ref": "#/definitions/endpoint"
+        },
+        "networkDomain": {
+          "$ref": "#/definitions/labelValue"
+        },
+        "reachableFrom": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/labelValue"
+          }
+        }
+      }
+    }
+  }
+}

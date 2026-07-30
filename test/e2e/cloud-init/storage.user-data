@@ -1,0 +1,30 @@
+#cloud-config
+hostname: storage0
+manage_etc_hosts: true
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+packages:
+  - libzfslinux-dev
+  - nfs-kernel-server
+  - zfs-dkms
+  - zfsutils-linux
+write_files:
+  - path: /usr/local/sbin/zfs-csi-storage-ready
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      modprobe -n zfs >/dev/null
+      modprobe -n nvmet >/dev/null
+      modprobe -n nvmet-tcp >/dev/null
+      test -d /sys/kernel/config/nvmet
+runcmd:
+  - [modprobe, zfs]
+  - [modprobe, nvmet]
+  - [modprobe, nvmet-tcp]
+  - [systemctl, enable, --now, nfs-server]
+  - [/usr/local/sbin/zfs-csi-e2e-ready]
+  - [/usr/local/sbin/zfs-csi-storage-ready]

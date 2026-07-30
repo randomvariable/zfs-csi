@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+AWS_REGION="${AWS_REGION:-us-east-1}"
+REAP_TTL_HOURS="${REAP_TTL_HOURS:-12}"
+TAG_KEY="zfs-csi-e2e-cluster"
+OWNER_TAG="zfs-csi-e2e"
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "${tmpdir}"' EXIT
+
+clusters_json="${tmpdir}/clusters.json"
+resources_json="${tmpdir}/resources.json"
+instances_json="${tmpdir}/instances.json"
+volumes_json="${tmpdir}/volumes.json"
+
+if ! kubectl get namespace capa-system >/dev/null; then
+  echo "FATAL: capa-system namespace not found; not CAPA management cluster, refusing to classify"
+  exit 1
+fi
+
+if ! kubectl get secret -n capa-system capa-manager-bootstrap-credentials >/dev/null; then
+  echo "FATAL: capa-manager-bootstrap-credentials secret not found; mgmt-cluster anchor missing, refusing to classify"
+  exit 1
+fi
+
+kubectl get clusters.cluster.x-k8s.io -A -o json >"${clusters_json}"
+aws resourcegroupstaggingapi get-resources \
+  --region "${AWS_REGION}" \
+  --tag-filters "Key=${OWNER_TAG},Values=owned" \
+  --output json >"${resources_json}"
+
+instance_ids="$(jq -r '.ResourceTagMappingList[].ResourceARN | select(test(":instance/i-")) | split("/")[-1]' "${resources_json}" | sort -u | paste -sd, -)"
+volume_ids="$(jq -r '.ResourceTagMappingList[].ResourceARN | select(test(":volume/vol-")) | split("/")[-1]' "${resources_json}" | sort -u | paste -sd, -)"
+
+if [[ -n "${instance_ids}" ]]; then
+  aws ec2 describe-instances --region "${AWS_REGION}" --instance-ids ${instance_ids//,/ } --output json >"${instances_json}"
+else
+  printf '{"Reservations":[]}' >"${instances_json}"
+fi
+
+if [[ -n "${volume_ids}" ]]; then
+  aws ec2 describe-volumes --region "${AWS_REGION}" --volume-ids ${volume_ids//,/ } --output json >"${volumes_json}"
+else
+  printf '{"Volumes":[]}' >"${volumes_json}"
+fi
+
+jq -n \
+  --argjson clusters "$(cat "${clusters_json}")" \
+  --argjson resources "$(cat "${resources_json}")" \
+  --argjson instances "$(cat "${instances_json}")" \
+  --argjson volumes "$(cat "${volumes_json}")" \
+  --arg tagKey "${TAG_KEY}" \
+  --arg ttlHours "${REAP_TTL_HOURS}" '
+    def tag($tags; $key): ($tags // [] | map(select(.Key == $key or .key == $key)) | .[0].Value // .[0].value // null);
+    def instance_age($id):
+      [ $instances.Reservations[].Instances[]? | select(.InstanceId == $id) | .LaunchTime ][0] // "unknown";
+    def volume_age($id):
+      [ $volumes.Volumes[]? | select(.VolumeId == $id) | .CreateTime ][0] // "unknown";
+    def resource_id($arn): $arn | split("/")[-1];
+    def resource_age($arn):
+      if ($arn | test(":instance/i-")) then instance_age(resource_id($arn))
+      elif ($arn | test(":volume/vol-")) then volume_age(resource_id($arn))
+      else "unknown" end;
+    def classify($cluster; $live):
+      if ($cluster == null or $cluster == "") then "UNCLASSIFIABLE"
+      elif ($live | index($cluster)) then "LIVE"
+      else "SUSPECTED_ORPHAN" end;
+
+    ($clusters.items // [] | map(.metadata.name) | unique) as $live_clusters |
+    [ $resources.ResourceTagMappingList[]? |
+      .ResourceARN as $arn |
+      (tag(.Tags; $tagKey)) as $cluster |
+      {
+        classification: classify($cluster; $live_clusters),
+        arn: $arn,
+        cluster: ($cluster // ""),
+        age: resource_age($arn)
+      }
+    ] as $items |
+    {
+      ttl_hours: ($ttlHours | tonumber),
+      live_clusters: $live_clusters,
+      summary: {
+        LIVE: ($items | map(select(.classification == "LIVE")) | length),
+        UNCLASSIFIABLE: ($items | map(select(.classification == "UNCLASSIFIABLE")) | length),
+        SUSPECTED_ORPHAN: ($items | map(select(.classification == "SUSPECTED_ORPHAN")) | length)
+      },
+      resources: $items
+    }
+  ' | tee "${tmpdir}/report.json"
+
+jq -r '
+  "SUMMARY LIVE=\(.summary.LIVE) UNCLASSIFIABLE=\(.summary.UNCLASSIFIABLE) SUSPECTED_ORPHAN=\(.summary.SUSPECTED_ORPHAN)",
+  (.resources[] | "\(.classification) cluster=\(.cluster // "") age=\(.age) arn=\(.arn)")
+' "${tmpdir}/report.json"
+
+suspected="$(jq -r '.summary.SUSPECTED_ORPHAN' "${tmpdir}/report.json")"
+if [[ "${suspected}" != "0" ]]; then
+  echo "SUSPECTED ORPHAN RESOURCE(S) review kubectl logs"
+fi

@@ -1,0 +1,158 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# zfs-csi E2E storage node customization, injected as image-builder
+# node_custom_roles_post (runs after the node/kubernetes roles). At this point
+# ansible_kernel is the image's boot kernel because image-builder's Ubuntu 2404
+# build does not upgrade the kernel after the base install, and sysprep later
+# apt-mark holds every package. The distro (Canonical) zfsutils-linux ships a
+# working zfs.ko for that kernel, so no DKMS build is used.
+
+# Gather facts explicitly: image-builder includes this role via
+# node_custom_roles_post, and depending on how the play is invoked the facts
+# may not already be populated. A full gather is required because ansible_kernel
+# (used below to pin linux-modules-extra + assert modules for the boot kernel)
+# lives in the "platform" subset -- "min" does NOT include it. This role runs
+# once against the Ubuntu 24.04 image-builder build, so the full gather cost is
+# irrelevant, and it does not gate on ansible_os_family.
+- name: Gather facts for the boot kernel
+  ansible.builtin.setup:
+
+- name: Install zfs-csi E2E storage prerequisites
+  ansible.builtin.apt:
+    name:
+      - nfs-common
+      - nfs-kernel-server
+      - nvme-cli
+      # qemu-guest-agent is REQUIRED by CAPK: KubevirtMachine detects bootstrap
+      # success by reading /run/cluster-api/bootstrap-success.complete through
+      # the guest agent. Without it the VMI never reports AgentConnected, so the
+      # machine stays InfrastructureReady=False / BootstrapFailed forever even
+      # after kubeadm succeeds, and the cluster never provisions.
+      - qemu-guest-agent
+      # Canonical-provided ZFS userland + kernel module (no DKMS).
+      - zfsutils-linux
+      # nvmet-tcp / nvme-tcp / nvme-fabrics live in modules-extra, pinned to
+      # the image boot kernel. image-builder's ansible.cfg sets
+      # inject_facts_as_vars=False, so facts are only under ansible_facts[...]
+      # (the ansible_kernel injected var is undefined); use ansible_facts.kernel
+      # like image-builder's own gpu/security roles do.
+      - "linux-modules-extra-{{ ansible_facts['kernel'] }}"
+    state: present
+    update_cache: true
+
+- name: Enable qemu-guest-agent for CAPK bootstrap detection
+  ansible.builtin.systemd:
+    name: qemu-guest-agent
+    enabled: true
+
+- name: Load zfs-csi E2E kernel modules on boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/zfs-csi-e2e.conf
+    mode: "0644"
+    content: |
+      zfs
+      nvmet
+      nvmet-tcp
+      nvme-tcp
+      nvme-fabrics
+      configfs
+      tls
+
+- name: Enable forwarding for storage fabric tests
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-zfs-csi-e2e.conf
+    mode: "0644"
+    content: |
+      net.ipv4.ip_forward=1
+
+# nfs-kernel-server is required on the storage node: OpenZFS `sharenfs` on Linux
+# drives the in-kernel nfsd via exportfs (both ship in nfs-kernel-server). It is
+# baked into the single golden image but masked by default; only the storage
+# node's ZFS-server prep enables nfs-server. Client nodes leave it masked.
+- name: Mask nfs-server by default (storage node prep enables it)
+  ansible.builtin.systemd:
+    name: nfs-server
+    enabled: false
+    masked: true
+
+- name: Refresh module dependency metadata for the boot kernel
+  ansible.builtin.command: depmod {{ ansible_facts['kernel'] }}
+  changed_when: false
+
+# Real proof the required .ko files exist for the boot kernel. modprobe -n only
+# dry-runs config resolution and passes even when the module file is absent, so
+# it is replaced with a file-existence assertion via modinfo (fails closed).
+- name: Assert required kernel modules exist for the boot kernel
+  ansible.builtin.command: modinfo -k {{ ansible_facts['kernel'] }} {{ item }}
+  changed_when: false
+  loop:
+    - zfs
+    - nvmet
+    - nvmet_tcp
+    - nvme_tcp
+    - nvme_fabrics
+    - configfs
+    - tls
+
+- name: Assert kernel generic-netlink TLS handshake support exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    genl ctrl list | grep -q '^Name:.*handshake$'
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Assert kernel NFS server TLS handshake support exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    module=$(modinfo -k {{ ansible_facts['kernel'] }} -F filename sunrpc)
+    case "$module" in
+      *.zst) zstdcat "$module" ;;
+      *.xz) xzcat "$module" ;;
+      *.gz) gzip -dc "$module" ;;
+      *) cat "$module" ;;
+    esac | strings | grep -qx svc_tcp_handshake
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+# Make reboots tear the SSH connection down cleanly so image-builder's Packer
+# QEMU build does not stall. The build uses SLIRP usermode networking; on a
+# reboot the guest must emit a FIN/RST for Packer's SSH connection *while the
+# NIC is still up*, or SLIRP keeps the host-side socket half-open (ESTABLISHED)
+# and Packer -- whose SSH keepalive cannot detect a half-open SLIRP socket --
+# blocks until its 2h ssh_timeout. Ubuntu's ssh.service default KillMode leaves
+# the forked session process serving Packer alive when ssh.service stops early
+# in shutdown; it is only SIGKILLed late, after networking is down, so its FIN
+# never egresses. KillMode=mixed SIGKILLs the session process when ssh.service
+# stops (before network teardown), so the close reaches SLIRP and Packer
+# reconnects. Safe here because this golden image only builds ephemeral E2E
+# nodes.
+# The SSH-reboot sever (KillMode drop-in + shutdown sever unit) lives in the
+# separate zfs_csi_e2e_ssh role, injected as firstboot_custom_roles_post so it
+# is active before the firstboot reboot (this node role runs too late for that).
+
+- name: Mark image contents for E2E diagnostics
+  ansible.builtin.copy:
+    dest: /etc/zfs-csi-e2e-image
+    mode: "0644"
+    content: |
+      node_prep=kubeadm,containerd,nvme,nfs,zfs,openzfs
+      zfs_module=canonical-zfsutils-linux
+      boot_kernel={{ ansible_facts['kernel'] }}
+      ssh_reboot_sever=firstboot-role

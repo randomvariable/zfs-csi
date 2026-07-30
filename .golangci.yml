@@ -1,0 +1,270 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+    - golines
+  settings:
+    gci:
+      custom-order: true
+      sections:
+        - standard
+        - dot
+        - default
+        - prefix(github.com/randomvariable/zfs-csi)
+    golines:
+      max-len: 180
+issues:
+  max-same-issues: 0
+  fix: false
+linters:
+  disable:
+    - depguard
+    - exhaustruct
+    - gochecknoglobals
+    - gochecknoinits
+    - lll
+    - noinlineerr
+    - nonamedreturns
+    - tagliatelle
+    - testpackage
+    - wsl
+  enable:
+    - goheader
+  default: standard
+  exclusions:
+    generated: strict
+    warn-unused: true
+    paths:
+      - zz_generated.*\.go$
+    rules:
+      - text: "unknown option \"(inline|omitzero)\""
+        linters:
+          - revive
+      - text: declaration of "err" shadows declaration
+        linters:
+          - govet
+      - path: _test\.go$
+        linters:
+          - err113
+          - funlen
+          - gosec
+          - noctx
+          - mnd
+      - path-except: api/v1alpha1/
+        linters:
+          - kubeapilinter
+  settings:
+    custom:
+      kubeapilinter:
+        type: module
+        description: Kubernetes API Linter for API types
+        settings:
+          linters:
+            enable:
+              - jsontags
+              - optionalorrequired
+              - commentstart
+              - nofloats
+              - integers
+            disable:
+              - nobools
+              - ssatags
+              - statusoptional
+              - statussubresource
+              - optionalfields
+              - requiredfields
+          lintersConfig:
+            jsontags:
+              jsonTagRegex: "^[a-z][a-zA-Z0-9]*$"
+    goheader:
+      template: |-
+        Copyright 2026 Naadir Jeewa
+
+        Licensed under the Apache License, Version 2.0 (the "License");
+        you may not use this file except in compliance with the License.
+        You may obtain a copy of the License at
+
+            http://www.apache.org/licenses/LICENSE-2.0
+
+        Unless required by applicable law or agreed to in writing, software
+        distributed under the License is distributed on an "AS IS" BASIS,
+        WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+        See the License for the specific language governing permissions and
+        limitations under the License.
+
+        SPDX-License-Identifier: Apache-2.0
+    forbidigo:
+      forbid:
+        - pattern: '^(\w+\.)?Update$'
+          pkg: '^sigs\.k8s\.io/controller-runtime/pkg/client$'
+          msg: Use Client.Patch instead of Client.Update to prevent race conditions
+        - pattern: '^(\w+\.)?CreateOrUpdate$'
+          pkg: '^sigs\.k8s\.io/controller-runtime/pkg/controller/controllerutil$'
+          msg: Use CreateOrPatch instead of CreateOrUpdate to prevent race conditions
+      analyze-types: true
+    godox:
+      keywords:
+        - BUG
+        - FIXME
+        - OPTIMIZE
+        - HACK
+    cyclop:
+      max-complexity: 12
+    exhaustive:
+      default-signifies-exhaustive: true
+    funlen:
+      lines: 120
+      statements: 120
+    gocritic:
+      enable-all: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    importas:
+      alias:
+        - alias: corev1
+          pkg: k8s.io/api/core/v1
+        - alias: apierrors
+          pkg: k8s.io/apimachinery/pkg/api/errors
+        - alias: metav1
+          pkg: k8s.io/apimachinery/pkg/apis/meta/v1
+        - alias: apimachinerytypes
+          pkg: k8s.io/apimachinery/pkg/types
+        - alias: kerrors
+          pkg: k8s.io/apimachinery/pkg/util/errors
+        - alias: clientgoscheme
+          pkg: k8s.io/client-go/kubernetes/scheme
+        - alias: ctrl
+          pkg: sigs.k8s.io/controller-runtime
+        - alias: crclient
+          pkg: sigs.k8s.io/controller-runtime/pkg/client
+        - alias: logf
+          pkg: sigs.k8s.io/controller-runtime/pkg/log
+        - alias: zfscsiv1
+          pkg: github.com/randomvariable/zfs-csi/api/v1alpha1
+        - alias: nvmetv1
+          pkg: github.com/randomvariable/zfs-csi/api/nvmet/v1alpha1
+      no-unaliased: true
+    ireturn:
+      allow:
+        - (or|er)$
+        - anon
+        - empty
+        - error
+        - k8s.io/apimachinery/pkg/runtime.Object
+        - k8s.io/apimachinery/pkg/runtime/schema.ObjectKind
+        - sigs.k8s.io/controller-runtime/pkg/client.Client
+        - sigs.k8s.io/controller-runtime/pkg/client.Object
+        - sigs.k8s.io/controller-runtime/pkg/manager.Runnable
+        - stdlib
+    revive:
+      enable-all-rules: true
+      rules:
+        - name: line-length-limit
+          disabled: true
+        - name: cognitive-complexity
+          disabled: true
+        - name: cyclomatic
+          disabled: true
+        - name: add-constant
+          disabled: true
+        - name: exported
+          disabled: true
+        - name: dot-imports
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: function-length
+          disabled: true
+        - name: blank-imports
+          disabled: true
+        - name: max-public-structs
+          disabled: true
+        - name: confusing-results
+          disabled: true
+        - name: import-alias-naming
+          disabled: true
+        - name: unused-receiver
+          disabled: true
+        - name: deep-exit
+          disabled: true
+        - name: flag-parameter
+          disabled: true
+        - name: comment-spacings
+          disabled: true
+    testifylint:
+      enable-all: true
+    usetesting:
+      # os-setenv disabled: Go runtime forbids combining t.Setenv with t.Parallel().
+      # Tests use unique env var prefixes per test for safe parallel execution.
+      os-setenv: false
+    varnamelen:
+      ignore-names:
+        - b
+        - c
+        - cc
+        - cm
+        - d
+        - e
+        - err
+        - f
+        - g
+        - i
+        - id
+        - ip
+        - k
+        - l
+        - ns
+        - ok
+        - p
+        - r
+        - s
+        - t
+        - tc
+        - tt
+        - v
+        - wg
+    wrapcheck:
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithMessagef(
+        - .WithStack(
+        - google.golang.org/grpc/status.Error(
+        - google.golang.org/grpc/status.Errorf(
+        - status.Error(
+        - status.Errorf(
+        - (github.com/randomvariable/zfs-csi/internal/transport.Writer).MkdirAll(
+        - (github.com/randomvariable/zfs-csi/internal/transport.Writer).WriteFile(
+        - (github.com/randomvariable/zfs-csi/internal/transport.Writer).ReadFile(
+        - (github.com/randomvariable/zfs-csi/internal/transport.Writer).ReadDir(
+        - (github.com/randomvariable/zfs-csi/internal/transport.Writer).RemoveAll(
+        - (github.com/randomvariable/zfs-csi/internal/transport.Writer).Symlink(
+        - (github.com/randomvariable/zfs-csi/internal/transport.Writer).Lexists(
+run:
+  timeout: 10m
+version: "2"

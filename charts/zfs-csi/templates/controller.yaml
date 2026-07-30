@@ -1,0 +1,224 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.controller.enabled }}
+{{- $multiOwner := gt (len .Values.storageOwners) 0 }}
+{{- $replicas := int .Values.controller.replicas }}
+{{- if lt $replicas 1 }}{{- fail "controller.replicas must be at least 1" }}{{- end }}
+{{- if and (gt $replicas 1) (not $multiOwner) }}{{- fail "controller.replicas greater than 1 requires storageOwners" }}{{- end }}
+{{- if not $multiOwner }}
+{{- $_ := required "storageNode.name is required when controller.enabled is true" .Values.storageNode.name }}
+{{- end }}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zfs-csi-controller
+  namespace: {{ include "zfs-csi.namespace" . }}
+spec:
+  replicas: {{ $replicas }}
+{{- if gt $replicas 1 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Required pod anti-affinity needs one free eligible node during updates.
+      # Avoid creating an unschedulable surge pod that deadlocks the rollout.
+      maxSurge: 0
+      maxUnavailable: 1
+{{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zfs-csi
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zfs-csi
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: zfs-csi-controller
+      priorityClassName: {{ .Values.controller.priorityClassName }}
+{{- if $multiOwner }}
+{{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.controller.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- else }}
+      nodeSelector:
+{{ toYaml .Values.storageNode.selector | indent 8 }}
+      tolerations:
+{{ toYaml .Values.storageNode.tolerations | indent 8 }}
+{{- end }}
+{{- if gt $replicas 1 }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: zfs-csi
+                  app.kubernetes.io/component: controller
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+{{- if .Values.controller.topologySpreadConstraints }}
+{{ toYaml .Values.controller.topologySpreadConstraints | indent 8 }}
+{{- else }}
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: zfs-csi
+              app.kubernetes.io/component: controller
+{{- end }}
+{{- end }}
+      containers:
+        - name: driver
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --mode=controller
+            - --csi-address=/csi/csi.sock
+            - --namespace=$(POD_NAMESPACE)
+            - --leader-elect={{ not $multiOwner }}
+            - --metrics-bind-address={{ .Values.controller.metricsBindAddress }}
+            - --health-probe-bind-address={{ .Values.controller.healthProbeBindAddress }}
+            - --sync-period={{ .Values.controller.manager.syncPeriod }}
+{{- if .Values.encryption.enabled }}
+            - --openbao-addr={{ .Values.encryption.openbao.addr }}
+            - --openbao-mount={{ .Values.encryption.openbao.transitMount }}
+            - --openbao-role={{ .Values.encryption.openbao.role }}
+{{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+{{- if and .Values.encryption.enabled .Values.encryption.openbao.token }}
+            - name: OPENBAO_TOKEN
+              value: {{ .Values.encryption.openbao.token | quote }}
+{{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: external-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --feature-gates=Topology=true
+            - --enable-capacity
+            - --capacity-ownerref-level=2
+            - --capacity-for-immediate-binding=true
+            - --worker-threads={{ .Values.controller.sidecars.provisioner.workerThreads }}
+            - --kube-api-qps={{ .Values.controller.sidecars.provisioner.kubeAPIQPS }}
+            - --kube-api-burst={{ .Values.controller.sidecars.provisioner.kubeAPIBurst }}
+            - --timeout={{ .Values.controller.sidecars.provisioner.timeout }}
+{{- if gt $replicas 1 }}
+            - --leader-election=true
+{{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+        - name: external-attacher
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.12.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --worker-threads={{ .Values.controller.sidecars.attacher.workerThreads }}
+            - --kube-api-qps={{ .Values.controller.sidecars.attacher.kubeAPIQPS }}
+            - --kube-api-burst={{ .Values.controller.sidecars.attacher.kubeAPIBurst }}
+            - --timeout={{ .Values.controller.sidecars.attacher.timeout }}
+{{- if gt $replicas 1 }}
+            - --leader-election=true
+{{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: external-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
+          args:
+            - --csi-address=/csi/csi.sock
+            # The v1 VolumeAttributesClass API is stable. Enable its controller so
+            # a PVC class change reaches ControllerModifyVolume.
+            - --feature-gates=VolumeAttributesClass=true
+            - --workers={{ .Values.controller.sidecars.resizer.workers }}
+            - --kube-api-qps={{ .Values.controller.sidecars.resizer.kubeAPIQPS }}
+            - --kube-api-burst={{ .Values.controller.sidecars.resizer.kubeAPIBurst }}
+            - --timeout={{ .Values.controller.sidecars.resizer.timeout }}
+{{- if gt $replicas 1 }}
+            - --leader-election=true
+{{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-snapshotter
+          image: registry.k8s.io/sig-storage/csi-snapshotter:v8.2.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --leader-election={{ gt $replicas 1 }}
+            - --worker-threads={{ .Values.controller.sidecars.snapshotter.workerThreads }}
+            - --kube-api-qps={{ .Values.controller.sidecars.snapshotter.kubeAPIQPS }}
+            - --kube-api-burst={{ .Values.controller.sidecars.snapshotter.kubeAPIBurst }}
+            - --timeout={{ .Values.controller.sidecars.snapshotter.timeout }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-external-health-monitor-controller
+          image: registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.15.0
+          args:
+            - "--csi-address=/csi/csi.sock"
+            - "--leader-election={{ gt $replicas 1 }}"
+            - "--http-endpoint=:8081"
+            - "--worker-threads={{ .Values.controller.sidecars.healthMonitor.workerThreads }}"
+            - "--timeout={{ .Values.controller.sidecars.healthMonitor.timeout }}"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: liveness-probe
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.19.0
+          args: ["--csi-address=/csi/csi.sock"]
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+{{- end }}

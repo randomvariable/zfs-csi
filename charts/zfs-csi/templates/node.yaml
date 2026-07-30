@@ -1,0 +1,301 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.node.enabled }}
+{{- $multiOwner := gt (len .Values.storageOwners) 0 }}
+{{- $networkDomainSource := .Values.node.networkDomainSource | default "static" }}
+{{- if $multiOwner }}{{- $networkDomainSource = "nodeLabel" }}{{- end }}
+{{- if not (has $networkDomainSource (list "static" "nodeLabel")) }}
+{{- fail "node.networkDomainSource must be static or nodeLabel" }}
+{{- end }}
+{{- $networkDomain := .Values.node.networkDomain }}
+{{- $networkDomainLabel := .Values.node.networkDomainLabel | default "topology.zfs.csi.randomvariable.co.uk/network-domain" }}
+{{- if eq $networkDomainSource "static" }}
+{{- $networkDomain = required "node.networkDomain is required when node.enabled is true in static mode" $networkDomain }}
+{{- else }}
+{{- $networkDomainLabel = required "node.networkDomainLabel is required in nodeLabel mode" $networkDomainLabel }}
+{{- end }}
+{{- $portalHost := "" }}
+{{- $nfsServer := "" }}
+{{- if and (eq $networkDomainSource "static") (or .Values.storageClasses.tankNVMe.enabled .Values.storageClasses.tankNVMeTLS.enabled .Values.storageClasses.flashNVMe.enabled .Values.encryption.enabled .Values.nvmet.enabled) }}
+{{- $portalHost = required "network.portalHost is required when node.enabled is true with an NVMe StorageClass, encryption, or nvmet enabled" .Values.network.portalHost }}
+{{- end }}
+{{- if and (eq $networkDomainSource "static") (or .Values.storageClasses.tankNFS.enabled .Values.storageClasses.tankNFSTLS.enabled .Values.storageClasses.flashNFS.enabled) }}
+{{- $nfsServer = required "network.nfsServer is required when node.enabled is true with an NFS StorageClass enabled" .Values.network.nfsServer }}
+{{- end }}
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: zfs-csi-node
+  namespace: {{ include "zfs-csi.namespace" . }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zfs-csi
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zfs-csi
+        app.kubernetes.io/component: node
+    spec:
+      serviceAccountName: zfs-csi-node
+      hostNetwork: true
+{{- if .Values.network.tls.enabled }}
+      # Host keyrings and TLS handshakes are owned by host-kernel consumers.
+      hostUsers: true
+{{- end }}
+      # The node plugin is a CSI node DaemonSet: it must run on every node so that
+      # any pod scheduled there can stage and mount its volumes. Tolerate all
+      # taints (the standard CSI node-plugin pattern) so the plugin is present on
+      # tainted nodes too — notably the storage node, which carries the
+      # zfs.csi.randomvariable.co.uk/storage NoSchedule taint. Without this the
+      # DaemonSet would skip the storage node and a volume-consuming pod that
+      # tolerates the storage taint could not attach there.
+      tolerations:
+        - operator: Exists
+{{- with .Values.node.nodeSelector }}
+      # Scheduling constraints from node.nodeSelector.
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- if or .Values.storageClasses.tankNVMe.enabled .Values.storageClasses.tankNVMeTLS.enabled .Values.storageClasses.flashNVMe.enabled .Values.encryption.enabled .Values.nvmet.enabled }}
+      initContainers:
+        - name: load-nvme-modules
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ceu", "modprobe nvme-fabrics && modprobe nvme-tcp"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: sys
+              mountPath: /sys
+{{- end }}
+      containers:
+        - name: driver
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          args:
+            - --mode=node
+            - --csi-address=/csi/csi.sock
+            - --network-domain-source={{ $networkDomainSource }}
+            - --network-domain-label={{ $networkDomainLabel }}
+{{- if eq $networkDomainSource "static" }}
+            - --network-domain={{ $networkDomain }}
+{{- end }}
+{{- if $nfsServer }}
+            - --nfs-server={{ $nfsServer }}
+{{- end }}
+{{- if $portalHost }}
+            - --portal-host={{ $portalHost }}
+{{- end }}
+            - --max-volumes-per-node={{ .Values.node.maxVolumesPerNode }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            # The node driver routes block/filesystem staging to the nvmet-stage
+            # and nfs-stage sidecars over unix sockets in the shared /stage
+            # emptyDir. Without this mount the driver cannot see the sidecar
+            # sockets and NodeStage fails "dial unix /stage/nvmet.sock: no such
+            # file or directory".
+            - name: stage-sock
+              mountPath: /stage
+            - name: kubelet
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: dev
+              mountPath: /dev
+            - name: sys
+              mountPath: /sys
+        # nvmet-stage sidecar: node-local StagePlugin (attach+format+mount) for
+        # nvme-tcp block volumes. The node driver routes block staging requests
+        # to this socket and fails fast if it is not ready.
+        - name: nvmet-stage
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          args:
+            - --mode=nvmet-stage
+            - --stage-socket=/stage/nvmet.sock
+            - --nvme-ctrl-loss-tmo={{ .Values.node.nvme.ctrlLossTMO }}
+            - --nvme-reconnect-delay={{ .Values.node.nvme.reconnectDelay }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: stage-sock
+              mountPath: /stage
+            - name: dev
+              mountPath: /dev
+            - name: sys
+              mountPath: /sys
+            - name: kubelet
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+          readinessProbe:
+            exec:
+              command: ["test", "-S", "/stage/nvmet.sock"]
+            initialDelaySeconds: 1
+            periodSeconds: 5
+        # nfs-stage sidecar: node-local StagePlugin (mount only) for nfs
+        # filesystem volumes. The node driver routes filesystem staging requests
+        # to this socket and fails fast if it is not ready.
+        - name: nfs-stage
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          args:
+            - --mode=nfs-stage
+            - --stage-socket=/stage/nfs.sock
+          volumeMounts:
+            - name: stage-sock
+              mountPath: /stage
+            - name: kubelet
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+          readinessProbe:
+            exec:
+              command: ["test", "-S", "/stage/nfs.sock"]
+            initialDelaySeconds: 1
+            periodSeconds: 5
+{{- if .Values.network.tls.enabled }}
+        - name: tlshd
+          image: {{ include "zfs-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |-
+              # Kubelet projects PodCertificate files at mode 0400, but tlshd
+              # enforces 0600 (key) and 0644 (cert/CA). Mirror them into a
+              # writable emptyDir with the modes tlshd demands; the loop
+              # re-mirrors every 5s so kubelet cert rotation propagates
+              # without restarting tlshd (it re-reads files per handshake).
+              (
+                while true; do
+                  cp -fL /run/zfs-csi-tls/tls.crt /run/zfs-csi-tls-live/tls.crt 2>/dev/null || true
+                  cp -fL /run/zfs-csi-tls/tls.key /run/zfs-csi-tls-live/tls.key 2>/dev/null || true
+                  cp -fL /run/zfs-csi-tls/ca.crt /run/zfs-csi-tls-live/ca.crt 2>/dev/null || true
+                  chmod 0644 /run/zfs-csi-tls-live/tls.crt /run/zfs-csi-tls-live/ca.crt 2>/dev/null || true
+                  chmod 0600 /run/zfs-csi-tls-live/tls.key 2>/dev/null || true
+                  sleep 5
+                done
+              ) &
+              /usr/sbin/tlshd -s -c /etc/tlshd/config
+              exec sleep infinity
+{{- range .Values.network.tls.tlshd.extraArgs }}
+            - {{ . | quote }}
+{{- end }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: run-zfs
+              mountPath: /run/zfs-csi
+            - name: dev
+              mountPath: /dev
+            - name: sys
+              mountPath: /sys
+            - name: tlshd-config
+              mountPath: /etc/tlshd/config
+              subPath: config
+              readOnly: true
+            - name: tls-client
+              mountPath: /run/zfs-csi-tls
+              readOnly: true
+            - name: tls-client-live
+              mountPath: /run/zfs-csi-tls-live
+{{- end }}
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/zfs.csi.randomvariable.co.uk/csi.sock
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      volumes:
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/zfs.csi.randomvariable.co.uk
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: DirectoryOrCreate
+        - name: kubelet
+          hostPath:
+            path: /var/lib/kubelet
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: sys
+          hostPath:
+            path: /sys
+{{- if .Values.network.tls.enabled }}
+        - name: run-zfs
+          hostPath:
+            path: /run/zfs-csi
+            type: DirectoryOrCreate
+        - name: tls-client
+          projected:
+            defaultMode: 0400
+            sources:
+              - podCertificate:
+                  signerName: zfs.csi.randomvariable.co.uk/nfs-client
+                  keyType: ECDSAP256
+                  maxExpirationSeconds: 3600
+                  certificateChainPath: tls.crt
+                  keyPath: tls.key
+              - secret:
+                  name: zfs-csi-tls-ca-public
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        # Writable mirror for the projected TLS material. The projection pins
+        # every file at 0400 but tlshd enforces 0600 (key) and 0644 (cert/CA),
+        # so the tlshd container re-mirrors into this emptyDir with the modes
+        # tlshd demands and reads credentials from here.
+        - name: tls-client-live
+          emptyDir: {}
+        - name: tlshd-config
+          configMap:
+            name: zfs-csi-tlshd-node-config
+{{- end }}
+        # Shared emptyDir for the node-local StagePlugin unix sockets. Co-located
+        # in the same pod so the driver can dial the sidecars with zero network hop.
+        - name: stage-sock
+          emptyDir: {}
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+{{- end }}

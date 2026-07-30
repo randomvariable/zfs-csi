@@ -1,0 +1,30 @@
+# Copyright 2026 Naadir Jeewa
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: e2e.zfs-csi.randomvariable.co.uk/v1alpha1
+kind: InfrastructureConfig
+metadata:
+  name: kubevirt-legacy
+spec:
+  provider: kubevirt
+  flavor: zfs-csi
+  addressFamilies: [ipv4]
+  storageOwners:
+    - name: storage-a
+      machineDeploymentSuffix: storage-a
+      nodeSelector:
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-a
+      pool:
+        name: tank
+        diskID: tank-a
+        deviceID: /dev/disk/by-id/virtio-tank-a
+      networkDomain: fabric-a
+      endpoints:
+        nfs: {ipv4: 10.19.1.20, port: 2049}
+        nvme: {ipv4: 10.19.1.20, port: 4420}
+  consumerWorkers:
+    - name: workers-a
+      machineDeploymentSuffix: md-0
+      nodeSelector: {zfs-csi.randomvariable.co.uk/consumer-group: workers-a}
+      replicas: 2
+      networkDomain: fabric-a

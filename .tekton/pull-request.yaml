@@ -1,0 +1,231 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: zfs-csi-pull-request
+  annotations:
+    pipelinesascode.tekton.dev/on-cel-expression: |
+      event == "pull_request" && target_branch == "main" &&
+      (".tekton/**".pathChanged() || "api/**".pathChanged() || "cmd/**".pathChanged() ||
+       "deploy/**".pathChanged() || "internal/**".pathChanged() || "magefiles/**".pathChanged() ||
+       "hack/**".pathChanged() || "docs/**".pathChanged() || "test/e2e/**".pathChanged() ||
+       "E2E-KVM-PLAN.md".pathChanged() || "go.mod".pathChanged() || "go.sum".pathChanged() ||
+       ".golangci.yml".pathChanged() || ".tools.yaml".pathChanged())
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+    pipelinesascode.tekton.dev/task: "git-clone"
+spec:
+  taskRunTemplate:
+    serviceAccountName: pipeline
+    podTemplate:
+      securityContext:
+        fsGroup: 65532
+  pipelineSpec:
+    params:
+      - name: repo_url
+        type: string
+      - name: revision
+        type: string
+    workspaces:
+      - name: source
+      - name: basic-auth
+    tasks:
+      - name: fetch-source
+        taskRef:
+          name: git-clone
+        workspaces:
+          - name: output
+            workspace: source
+          - name: basic-auth
+            workspace: basic-auth
+        params:
+          - name: url
+            value: $(params.repo_url)
+          - name: revision
+            value: $(params.revision)
+          - name: depth
+            value: "2"
+
+      - name: lint
+        runAfter:
+          - fetch-source
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: golangci-lint
+              image: golang:1.26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: GOPATH
+                  value: /go
+                - name: GOCACHE
+                  value: /tmp/gocache
+                - name: GOBIN
+                  value: /tmp/gobin
+              script: |
+                #!/bin/sh
+                set -eu
+                # Install golangci-lint v2
+                go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+                # Build kubeapilinter plugin into ./hack/tools/bin (from .custom-gcl.yml).
+                /tmp/gobin/golangci-lint custom
+                # The image has no libzfs development headers, so lint the
+                # complete E2E suite without the libzfs-only cgo path.
+                ./hack/tools/bin/golangci-lint-kube-api-linter run --build-tags=e2e ./...
+                # Run only the enumerated pure unit tests. The anchored allowlist
+                # excludes TestE2E and fails closed for future live E2E tests.
+                go test -tags=e2e -run '^(TestConformanceImageForVersion|TestBuildConformanceArgs|TestConformanceDefaults|TestConformanceEmptySkipOmitsFlag|TestConformanceSuiteTimeoutBounded|TestDiscoverStorageNodeRequiresExactlyOne|TestApplyStorageRoleLabelsAndTaintsNode|TestDriverImageFromEnvRequiresValue|TestPVCObjectUsesRequestedClassAndMode|TestSmokePodHasNoStorageToleration|TestSmokePodGroupAddsAntiAffinity)$' ./test/e2e
+
+      - name: unit-and-property
+        runAfter:
+          - fetch-source
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: go-test
+              image: golang:1.26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: GOCACHE
+                  value: /tmp/gocache
+                - name: CGO_ENABLED
+                  value: "0"
+              script: |
+                #!/bin/sh
+                set -eu
+                go test -count=1 -timeout 120s ./...
+
+            - name: go-race
+              image: golang:1.26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: GOCACHE
+                  value: /tmp/gocache
+                - name: CGO_ENABLED
+                  value: "1"
+              script: |
+                #!/bin/sh
+                set -eu
+                go test -race -count=1 -timeout 120s ./internal/agent/... ./internal/driver/... ./internal/naming/... ./internal/transport/...
+
+      - name: envtest
+        runAfter:
+          - fetch-source
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: setup-and-run
+              image: golang:1.26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: GOCACHE
+                  value: /tmp/gocache
+                - name: GOBIN
+                  value: /tmp/gobin
+                - name: CGO_ENABLED
+                  value: "0"
+              script: |
+                #!/bin/sh
+                set -eu
+                # Install setup-envtest
+                go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.21
+                # Download envtest binaries for k8s 1.36
+                ENVTEST_ASSETS=$(/tmp/gobin/setup-envtest use 1.36.0 --bin-dir /tmp/envtest -p path)
+                export KUBEBUILDER_ASSETS="$ENVTEST_ASSETS"
+                # Run envtest suite
+                go test -tags=envtest -count=1 -timeout 120s ./internal/agent/... ./internal/driver/...
+
+      - name: build
+        runAfter:
+          - unit-and-property
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: go-build
+              image: golang:1.26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: GOCACHE
+                  value: /tmp/gocache
+                - name: CGO_ENABLED
+                  value: "0"
+              script: |
+                #!/bin/sh
+                set -eu
+                go build -buildvcs=false ./...
+
+      - name: e2e-static-check
+        runAfter:
+          - fetch-source
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: mage-e2e-check
+              image: golang:1.26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: GOCACHE
+                  value: /tmp/gocache
+                - name: GOBIN
+                  value: /tmp/gobin
+              script: |
+                #!/bin/sh
+                set -eu
+                export PATH="/tmp/gobin:${PATH}"
+                apt-get update >/dev/null
+                apt-get install -y --no-install-recommends ca-certificates >/dev/null
+                go install github.com/magefile/mage@v1.15.0
+                mage e2e:check
+
+  params:
+    - name: repo_url
+      value: "{{ repo_url }}"
+    - name: revision
+      value: "{{ revision }}"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+    - name: basic-auth
+      secret:
+        secretName: "{{ git_auth_secret }}"

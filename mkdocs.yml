@@ -1,0 +1,161 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+site_name: zfs-csi
+site_description: >-
+  A Kubernetes CSI driver that provisions ZFS storage — block volumes over
+  NVMe-TCP and shared filesystems over NFS — with per-volume ZFS native
+  encryption.
+site_author: Naadir Jeewa
+# GitHub Pages is the canonical published site. Netlify (netlify.toml) is an
+# alternate/preview build only.
+site_url: https://randomvariable.github.io/zfs-csi/
+repo_url: https://github.com/randomvariable/zfs-csi
+repo_name: randomvariable/zfs-csi
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Naadir Jeewa — Apache-2.0
+
+# Documentation lives under docs/. Internal contributor notes (the e2e lane
+# design docs and the raw storage-model / topology-contract source material that
+# the Explanation section is rewritten from) live at the docs/ ROOT and are NOT
+# part of the published site. Exclude them so `mkdocs build --strict` does not
+# treat them as orphaned pages and so they never render on the public site.
+# The e2e-*.md glob also covers files another workstream writes into docs/.
+#
+# The leading `/` anchors each pattern to the docs/ root so it matches ONLY the
+# internal source file (e.g. docs/storage-model.md) and NOT the published,
+# rewritten Explanation page of the same basename (docs/explanation/storage-model.md).
+exclude_docs: |
+  /e2e-*.md
+  /storage-model.md
+  /topology-contract.md
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+# Validation: keep link and nav-target checking strict (these become errors
+# under `--strict`, catching broken cross-references and missing nav files).
+# omitted_files stays at info so a stray unpublished note (e.g. from another
+# workstream) does not fail the build.
+validation:
+  nav:
+    omitted_files: info
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+# Each nav entry maps to a file that exists under docs/; adding an entry before
+# its file exists fails --strict. Ordering follows the Diátaxis reading journey:
+# learn (tutorials), do (how-to), look up (reference), understand (explanation).
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Provision Your First Volume: tutorials/getting-started.md
+  - How-to Guides:
+      - Prepare Nodes: how-to/prepare-nodes.md
+      - Install with Helm: how-to/install-with-helm.md
+      - Operate Storage Topology Safely: how-to/operate-storage-topology.md
+      - Provision Block Storage: how-to/provision-block-storage.md
+      - Provision a Shared Filesystem: how-to/provision-shared-filesystem.md
+      - Snapshot and Restore: how-to/snapshot-and-restore.md
+      - Expand a Volume: how-to/expand-a-volume.md
+      - Enable Encryption: how-to/enable-encryption.md
+      - Enable Transport Security: how-to/enable-transport-security.md
+      - Import an Existing ZFS Volume: how-to/import-existing-zfs-volume.md
+      - Migrate Data into zfs-csi: how-to/migrate-data-into-zfs-csi.md
+      - Migrate from TrueNAS or democratic-csi: how-to/migrate-from-truenas-or-democratic-csi.md
+      - Uninstall: how-to/uninstall.md
+      - Troubleshooting: how-to/troubleshooting.md
+  - Reference:
+      - StorageClasses: reference/storage-classes.md
+      - Helm Values: reference/helm-values.md
+      - Command Line: reference/command-line.md
+      - Components and Workloads: reference/components.md
+      - Version Compatibility: reference/compatibility.md
+      - Observability: reference/observability.md
+      - Kubernetes API Surface: reference/kubernetes-api.md
+      - VolumeImport: reference/volume-import.md
+      - Internal API:
+          - Volume: reference/internal/volume.md
+          - Snapshot: reference/internal/snapshot.md
+          - NVMeExport: reference/internal/nvmeexport.md
+  - Explanation:
+      - Architecture: explanation/architecture.md
+      - Storage Model: explanation/storage-model.md
+      - Transport: explanation/transport.md
+      - Transport Security: explanation/transport-security.md
+      - Encryption: explanation/encryption.md
+      - Topology and Scheduling: explanation/topology.md
+      - Multi-Storage-Agent Topology and Placement: explanation/multi-storage-agent-topology.md
+      - Use Cases and Deployment Fit: explanation/use-cases.md
+      - Imported Volume Safety Model: explanation/imported-volume-safety.md

@@ -1,0 +1,15 @@
+<network>
+  <name>{{.NamePrefix}}-mgmt0</name>
+  <forward mode="nat"/>
+  <bridge name="{{.MgmtBridge}}" stp="on" delay="0"/>
+  <mtu size="1500"/>
+  <ip address="192.168.121.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.121.100" end="192.168.121.199"/>
+      <host mac="52:54:00:19:00:10" name="cp0" ip="192.168.121.10"/>
+      <host mac="52:54:00:19:00:20" name="storage0" ip="192.168.121.20"/>
+      <host mac="52:54:00:19:00:30" name="worker0" ip="192.168.121.30"/>
+      <host mac="52:54:00:19:00:31" name="worker1" ip="192.168.121.31"/>
+    </dhcp>
+  </ip>
+</network>

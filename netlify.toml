@@ -1,0 +1,32 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Netlify build configuration for the zfs-csi documentation site.
+#
+# GitHub Pages (.github/workflows/docs.yml) is the canonical published site.
+# This Netlify configuration exists as an alternate / preview build — for
+# example, Netlify Deploy Previews on pull requests. It builds the same MkDocs
+# site into the same output directory.
+#
+# Netlify's build image provides Python; mkdocs-material is pinned here to match
+# the version in .tools.yaml so the Netlify build matches the mage/CI build.
+
+[build]
+  publish = "site"
+  command = "pip install 'mkdocs-material==9.7.6' && mkdocs build --strict"
+
+[build.environment]
+  PYTHON_VERSION = "3.12"

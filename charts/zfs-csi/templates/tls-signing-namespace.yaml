@@ -1,0 +1,16 @@
+{{- if and .Values.network.tls.enabled .Values.network.tls.signer.enabled (or .Values.node.enabled .Values.storage.enabled) }}
+{{- $driverNamespace := include "zfs-csi.namespace" . }}
+{{- $signingNamespace := include "zfs-csi.tlsSigningNamespace" . }}
+{{- if ne $signingNamespace $driverNamespace }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $signingNamespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/name: zfs-csi
+    app.kubernetes.io/component: tls-signing-authority
+{{- end }}
+{{- end }}

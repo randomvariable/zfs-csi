@@ -1,0 +1,41 @@
+<domain type="kvm">
+  <name>{{.NamePrefix}}-{{.Role}}</name>
+  <memory unit="MiB">{{.MemoryMiB}}</memory>
+  <vcpu placement="static">{{.VCPU}}</vcpu>
+  <os>
+    <type arch="{{.Arch}}" machine="virt">hvm</type>
+    <boot dev="hd"/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+  <cpu mode="host-passthrough" check="none"/>
+  <devices>
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2"/>
+      <source file="{{.StateDir}}/{{.Role}}.qcow2"/>
+      <target dev="vda" bus="virtio"/>
+    </disk>
+    <disk type="file" device="cdrom">
+      <driver name="qemu" type="raw"/>
+      <source file="{{.StateDir}}/{{.Role}}-seed.iso"/>
+      <target dev="sda" bus="sata"/>
+      <readonly/>
+    </disk>
+    {{.ExtraDisks}}
+    <interface type="network">
+      <mac address="{{.MgmtMAC}}"/>
+      <source network="{{.NamePrefix}}-mgmt0"/>
+      <model type="virtio"/>
+    </interface>
+    <interface type="network">
+      <mac address="{{.FabricMAC}}"/>
+      <source network="{{.NamePrefix}}-fabric0"/>
+      <model type="virtio"/>
+      <mtu size="9000"/>
+    </interface>
+    <graphics type="vnc" autoport="yes" listen="127.0.0.1"/>
+    <console type="pty"/>
+  </devices>
+</domain>

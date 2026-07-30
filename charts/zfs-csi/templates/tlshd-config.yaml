@@ -1,0 +1,46 @@
+{{- if and .Values.network.tls.enabled .Values.node.enabled .Values.storage.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zfs-csi-tlshd-node-config
+  namespace: {{ include "zfs-csi.namespace" . }}
+data:
+  config: |
+    [debug]
+    loglevel={{ .Values.network.tls.tlshd.loglevel }}
+    tls=0
+    nl=0
+
+    [authenticate]
+
+    [authenticate.client]
+    # Kubelet rotates separate PodCertificate chain/key files but projects them
+    # at 0400, which tlshd rejects. The container mirrors them into
+    # /run/zfs-csi-tls-live with 0600/0644 modes every 5s; tlshd re-reads the
+    # mirrored files per handshake, so rotation still needs no restart/SIGHUP.
+    x509.truststore= /run/zfs-csi-tls-live/ca.crt
+    x509.certificate= /run/zfs-csi-tls-live/tls.crt
+    x509.private_key= /run/zfs-csi-tls-live/tls.key
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zfs-csi-tlshd-storage-config
+  namespace: {{ include "zfs-csi.namespace" . }}
+data:
+  config: |
+    [debug]
+    loglevel={{ .Values.network.tls.tlshd.loglevel }}
+    tls=0
+    nl=0
+
+    [authenticate]
+
+    [authenticate.server]
+    # Storage tlshd trusts the shared CA and uses a per-owner ServerAuth leaf.
+    # xprtsec=mtls exports reject clients without a verified client certificate.
+    x509.truststore= /run/zfs-csi-tls-ca/ca.crt
+    x509.certificate= /run/zfs-csi-tls/tls.crt
+    x509.private_key= /run/zfs-csi-tls/tls.key
+{{- end }}

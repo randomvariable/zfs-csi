@@ -1,0 +1,772 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# zfs-csi E2E cluster template for Cluster API Provider AWS (CAPA).
+#
+# Selected by clusterctl via InfrastructureProvider=aws + Flavor=zfs-csi-aws.
+# Provisions real EC2 nodes so the zfs-csi driver can be validated on fast,
+# non-Ceph storage (EBS gp3 pool disk). The KubeVirt-on-Ceph lane remains the
+# default; this lane is opt-in via E2E_INFRASTRUCTURE_PROVIDER=aws.
+#
+# Design notes (see docs/e2e-aws-lane.md for the full rationale):
+#   - Self-managed kubeadm cluster (NOT EKS). CAPA v2.x, contract v1beta2.
+#   - CAPA-managed VPC. `network` is omitted so CAPA creates the VPC/subnets/IGW.
+#     CAPA disables each instance's EC2 source/dest check at creation (via the
+#     capa-controller-manager identity) -- it is default behaviour, not a CRD
+#     field -- so Calico routes pod IPs (outside the VPC CIDR) natively. The CNI
+#     uses IPIP=CrossSubnet: pure native for same-subnet node pairs, encapsulate
+#     only across AZs. No Felix src/dst env and no node-role
+#     ec2:ModifyNetworkInterfaceAttribute needed (CAPA already did it).
+#   - t3a.medium (2 vCPU / 4Gi / EBS-only). Pool disk is a dedicated gp3 volume
+#     via nonRootVolumes with deviceName /dev/xvdb; the storage node installs
+#     amazon-ec2-utils whose udev rules expose it as a stable /dev/xvdb symlink
+#     (verified on the target AMI), passed to the harness via E2E_DATA_DISK_BY_ID.
+#   - Storage owners: separate -storage-a/-storage-b MachineDeployments, each
+#     with an independent gp3 pool disk and stable /dev/disk/by-id symlink.
+#   - CAPA v2.11.1 provisions an AWS-assigned IPv6 VPC CIDR, dual-stack NLB,
+#     and primary instance IPv6 addresses while retaining IPv4 connectivity.
+#   - Security groups: additionalNodeIngressRules open NVMe-oF/TCP (4420) and
+#     NFS (2049) for the driver's block + filesystem transports, plus IPsec
+#     (IKE 500, NAT-T 4500, ESP 50) for the future encryption lane. node-role
+#     source means intra-cluster node-to-node only.
+#   - Runtime ZFS install (no golden AMI): substrate probing confirmed
+#     stock CAPI Ubuntu 24.04 AMI + apt zfsutils-linux + linux-modules-extra +
+#     modprobe loads all needed modules and zpool create succeeds, so no baked
+#     AMI is required. Root deviceName must be /dev/sda1 (the AMI's root) or EC2
+#     attaches a phantom extra disk instead of resizing root.
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  region: "${AWS_REGION}"
+  sshKeyName: "${AWS_SSH_KEY_NAME}"
+  identityRef:
+    kind: "${AWS_IDENTITY_KIND}"
+    name: "${AWS_IDENTITY_NAME}"
+  # Conformance's skeleton provider reaches private workload-node InternalIPs
+  # through this CAPA-managed public jump host. Restrict ingress to the caller's
+  # explicit CIDR; clusterctl fails rendering when the variable is absent.
+  bastion:
+    enabled: true
+    allowedCIDRBlocks:
+      - "${E2E_AWS_BASTION_ALLOWED_CIDR}"
+  # Classic ELB spans every control-plane subnet (multi-AZ) but a single control
+  # plane lives in one AZ. With cross-zone LB off (CAPA default), the ELB nodes
+  # in the other AZs have no healthy backend and blackhole ~2/3 of API-server
+  # connections -- surfacing as intermittent "context deadline exceeded" from the
+  # mgmt cluster's CAPI controllers (clustercache, ClusterResourceSet), which
+  # then never deliver the CCM. Enable cross-zone so every ELB node forwards to
+  # the CP regardless of AZ.
+  controlPlaneLoadBalancer:
+    crossZoneLoadBalancing: true
+    loadBalancerType: nlb
+    targetGroupIPType: ipv6
+  additionalTags:
+    zfs-csi-e2e: "owned"
+    zfs-csi-e2e-cluster: "${CLUSTER_NAME}"
+  # EC2 source/dest check: CAPA disables it on every managed instance at
+  # creation (capa-controller-manager identity), which is what lets Calico route
+  # pod IPs (outside the VPC CIDR) natively. There is no sourceDestCheck field on
+  # AWSCluster/AWSMachine in CAPA v2.11 -- it is unconditional default behaviour.
+  network:
+    vpc:
+      ipv6: {}
+    additionalNodeIngressRules:
+      - description: "NVMe-oF/TCP (zfs-csi block transport)"
+        protocol: "tcp"
+        fromPort: 4420
+        toPort: 4420
+        sourceSecurityGroupRoles: ["node"]
+      - description: "NFS (zfs-csi filesystem transport)"
+        protocol: "tcp"
+        fromPort: 2049
+        toPort: 2049
+        sourceSecurityGroupRoles: ["node"]
+      # IPsec ingress for the future driver encryption lane (not used yet).
+      # IKE (UDP 500) + NAT-T (UDP 4500) + ESP (IP protocol 50).
+      - description: "IPsec IKE"
+        protocol: "udp"
+        fromPort: 500
+        toPort: 500
+        sourceSecurityGroupRoles: ["node"]
+      - description: "IPsec NAT-T"
+        protocol: "udp"
+        fromPort: 4500
+        toPort: 4500
+        sourceSecurityGroupRoles: ["node"]
+      - description: "IPsec ESP"
+        protocol: "50"
+        fromPort: -1
+        toPort: -1
+        sourceSecurityGroupRoles: ["node"]
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+    # crs-ccm ClusterResourceSet selects Cluster objects with ccm=external. The
+    # label MUST live on THIS Cluster object (not the AWSCluster) -- a CRS
+    # selector matches Cluster resources only. Without it the CCM is never
+    # delivered, nodes stay cloudprovider-uninitialized (NotReady), the CP
+    # Machine never gets a providerID/NodeRef, and ApplyClusterTemplateAndWait
+    # blocks on the control plane forever.
+    ccm: external
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.243.0.0/16"]
+    services:
+      cidrBlocks: ["10.95.0.0/16"]
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: AWSCluster
+    name: "${CLUSTER_NAME}"
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  kubeadmConfigSpec:
+    # Enable the alpha/beta CSI-relevant feature gates that are NOT already
+    # GA-locked-on at Kubernetes v1.36 (all other CSI gates GA'd/were removed and
+    # are always-on -- passing a removed gate name would make the component fail
+    # to start). apiServer + scheduler gates live here (control-plane components);
+    # kubelet gates go on every nodeRegistration (below + the worker templates).
+    #   apiServer:  CrossNamespaceVolumeDataSource (alpha), VolumeLimitScaling (alpha),
+    #               PodCertificateRequest (beta, NFS mTLS workload credentials)
+    #   scheduler:  StorageCapacityScoring (alpha), VolumeLimitScaling (alpha)
+    # VolumeLimitScaling is a scheduler+apiserver gate (KEP-5030, no kubelet
+    # interaction) -- it must NOT go in kubeletExtraArgs or kubelet fails to start.
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+          - name: feature-gates
+            value: "CrossNamespaceVolumeDataSource=true,PodCertificateRequest=true,VolumeLimitScaling=true"
+          # Kubernetes 1.36 does not serve PCR v1beta1 from feature-gate
+          # enablement alone. Keep this API resource explicitly enabled.
+          - name: runtime-config
+            value: "certificates.k8s.io/v1beta1/podcertificaterequests=true"
+      controllerManager:
+        extraArgs:
+          - name: feature-gates
+            value: "PodCertificateRequest=true"
+      scheduler:
+        extraArgs:
+          - name: feature-gates
+            value: "StorageCapacityScoring=true,VolumeLimitScaling=true"
+    initConfiguration:
+      nodeRegistration:
+        # Register with the full EC2 private-DNS name (ip-x-x-x-x.<region>.compute.internal).
+        # The AWS CCM matches Nodes to instances by the private-dns-name filter; the
+        # stock AMI's default short hostname makes CCM report "instance not found",
+        # so providerID is never set and nodes stay uninitialized. Canonical CAPA fix.
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+          # Node-side alpha/beta CSI gates (kubelet-consumed): CSIVolumeHealth
+          # (alpha, volume-condition eventing) + SELinuxMount (beta-off; inert on
+          # non-SELinux Ubuntu with CSIDriver.seLinuxMount=false) +
+          # PodCertificateRequest (kubelet projected key/certificate rotation).
+          - name: feature-gates
+            value: "CSIVolumeHealth=true,PodCertificateRequest=true,SELinuxMount=true"
+        criSocket: "${CRI_PATH}"
+    joinConfiguration:
+      nodeRegistration:
+        # Register with the full EC2 private-DNS name (ip-x-x-x-x.<region>.compute.internal).
+        # The AWS CCM matches Nodes to instances by the private-dns-name filter; the
+        # stock AMI's default short hostname makes CCM report "instance not found",
+        # so providerID is never set and nodes stay uninitialized. Canonical CAPA fix.
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+          - name: feature-gates
+            value: "CSIVolumeHealth=true,PodCertificateRequest=true,SELinuxMount=true"
+        criSocket: "${CRI_PATH}"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AWSMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      instanceType: "${AWS_CONTROL_PLANE_INSTANCE_TYPE}"
+      iamInstanceProfile: control-plane.cluster-api-provider-aws.sigs.k8s.io
+      ami:
+        id: "${AWS_AMI_ID}"
+      sshKeyName: "${AWS_SSH_KEY_NAME}"
+      assignPrimaryIPv6: enabled
+      additionalTags:
+        zfs-csi-e2e: "owned"
+        zfs-csi-e2e-cluster: "${CLUSTER_NAME}"
+        zfs-csi-e2e-owner: storage-a
+      rootVolume:
+        deviceName: "${AWS_ROOT_DEVICE_NAME}"
+        size: ${AWS_ROOT_DISK_SIZE_GIB}
+        type: gp3
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        zfs.csi.randomvariable.co.uk/consumer-pool: default
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          name: "${CLUSTER_NAME}-md-0"
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+      infrastructureRef:
+        name: "${CLUSTER_NAME}-md-0"
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AWSMachineTemplate
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+        - DEBIAN_FRONTEND=noninteractive apt-get update
+        - DEBIAN_FRONTEND=noninteractive apt-get install -y linux-modules-extra-$(uname -r) nvme-cli nfs-common
+        - modprobe nvme-tcp || true
+        - modprobe nvme-fabrics || true
+      joinConfiguration:
+        nodeRegistration:
+          # Register with the full EC2 private-DNS name so the AWS CCM can match
+          # the Node to its instance (private-dns-name filter). See CP note above.
+          name: '{{ ds.meta_data.local_hostname }}'
+          kubeletExtraArgs:
+            - name: cloud-provider
+              value: external
+            # Node-side alpha/beta CSI gates (see the KubeadmControlPlane note).
+            - name: feature-gates
+              value: "CSIVolumeHealth=true,PodCertificateRequest=true,SELinuxMount=true"
+            - name: node-labels
+              value: "zfs-csi.randomvariable.co.uk/consumer-group=workers-a,topology.zfs.csi.randomvariable.co.uk/network-domain=${CONSUMER_NETWORK_DOMAIN}"
+          criSocket: "${CRI_PATH}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      instanceType: "${AWS_NODE_INSTANCE_TYPE}"
+      iamInstanceProfile: nodes.cluster-api-provider-aws.sigs.k8s.io
+      ami:
+        id: "${AWS_AMI_ID}"
+      sshKeyName: "${AWS_SSH_KEY_NAME}"
+      assignPrimaryIPv6: enabled
+      rootVolume:
+        deviceName: "${AWS_ROOT_DEVICE_NAME}"
+        size: ${AWS_ROOT_DISK_SIZE_GIB}
+        type: gp3
+---
+# Storage owner A. Pool GUID remains dynamic and is discovered after zpool
+# creation; it is never encoded in CAPI/provider objects.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-storage-a"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: 1
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-a
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          name: "${CLUSTER_NAME}-storage-a"
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+      infrastructureRef:
+        name: "${CLUSTER_NAME}-storage-a"
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AWSMachineTemplate
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-a"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      # Runtime ZFS + NVMe-oF target/initiator module install on a stock Ubuntu
+      # 24.04 AMI. linux-modules-extra carries nvmet-tcp/nvme-fabrics/zfs on the
+      # generic kernel. If substrate probing shows these missing, swap
+      # to a baked golden AMI and drop this block.
+      preKubeadmCommands:
+        - DEBIAN_FRONTEND=noninteractive apt-get update
+        # amazon-ec2-utils installs udev rules that create a stable /dev/xvdb
+        # symlink to the nonRootVolume (deviceName=/dev/xvdb), independent of
+        # NVMe enumeration order. Without it the data disk is only reachable via
+        # its volume-id-embedded by-id path, which can't be hardcoded. Probing
+        # probe verified /dev/xvdb -> the gp3 pool volume.
+        - DEBIAN_FRONTEND=noninteractive apt-get install -y zfsutils-linux linux-modules-extra-$(uname -r) nfs-kernel-server nvme-cli amazon-ec2-utils
+        # The golden image masks nfs-server on non-storage nodes. The dedicated
+        # storage node must fail bootstrap unless the kernel NFS server is live.
+        - systemctl unmask nfs-server
+        - systemctl enable --now nfs-server
+        - udevadm trigger --subsystem-match=block || true
+        - modprobe zfs || true
+        - modprobe nvmet-tcp
+        - modprobe nvme-fabrics
+        - modprobe target_core_mod
+        - modprobe tls
+        - test "$(cat /sys/module/tls/coresize)" -gt 0
+        - genl ctrl list | grep -q '^Name:.*handshake$'
+        - module=$(modinfo -F filename sunrpc); case "$module" in *.zst) zstdcat "$module" ;; *.xz) xzcat "$module" ;; *.gz) gzip -dc "$module" ;; *) cat "$module" ;; esac | strings | grep -qx svc_tcp_handshake
+      joinConfiguration:
+        nodeRegistration:
+          # Register with the full EC2 private-DNS name so the AWS CCM can match
+          # the Node to its instance (private-dns-name filter). See CP note above.
+          name: '{{ ds.meta_data.local_hostname }}'
+          kubeletExtraArgs:
+            - name: cloud-provider
+              value: external
+            # Node-side alpha/beta CSI gates (see the KubeadmControlPlane note).
+            - name: feature-gates
+              value: "CSIVolumeHealth=true,PodCertificateRequest=true,SELinuxMount=true"
+            - name: node-labels
+              value: "zfs.csi.randomvariable.co.uk/storage-owner=storage-a"
+            - name: register-with-taints
+              value: "zfs.csi.randomvariable.co.uk/storage=true:NoSchedule"
+          criSocket: "${CRI_PATH}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-a"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      instanceType: "${AWS_STORAGE_INSTANCE_TYPE}"
+      iamInstanceProfile: nodes.cluster-api-provider-aws.sigs.k8s.io
+      ami:
+        id: "${AWS_AMI_ID}"
+      sshKeyName: "${AWS_SSH_KEY_NAME}"
+      assignPrimaryIPv6: enabled
+      rootVolume:
+        deviceName: "${AWS_ROOT_DEVICE_NAME}"
+        size: ${AWS_ROOT_DISK_SIZE_GIB}
+        type: gp3
+      # Dedicated gp3 pool volume. Harness resolves the EBS volume-ID path under
+      # /dev/disk/by-id from this attachment; /dev/xvdb is attachment metadata,
+      # not cleanup identity.
+      nonRootVolumes:
+        - deviceName: "/dev/xvdb"
+          size: ${AWS_DATA_DISK_SIZE_GIB}
+          type: gp3
+---
+# Storage owner B: independent instance and independent gp3 pool volume.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-storage-b"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: 1
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        zfs.csi.randomvariable.co.uk/storage-owner: storage-b
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          name: "${CLUSTER_NAME}-storage-b"
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+      infrastructureRef:
+        name: "${CLUSTER_NAME}-storage-b"
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AWSMachineTemplate
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-b"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+        - DEBIAN_FRONTEND=noninteractive apt-get update
+        - DEBIAN_FRONTEND=noninteractive apt-get install -y zfsutils-linux linux-modules-extra-$(uname -r) nfs-kernel-server nvme-cli amazon-ec2-utils
+        - systemctl unmask nfs-server
+        - systemctl enable --now nfs-server
+        - udevadm trigger --subsystem-match=block || true
+        - modprobe zfs || true
+        - modprobe nvmet-tcp
+        - modprobe nvme-fabrics
+        - modprobe target_core_mod
+        - modprobe tls
+        - test "$(cat /sys/module/tls/coresize)" -gt 0
+        - genl ctrl list | grep -q '^Name:.*handshake$'
+        - module=$(modinfo -F filename sunrpc); case "$module" in *.zst) zstdcat "$module" ;; *.xz) xzcat "$module" ;; *.gz) gzip -dc "$module" ;; *) cat "$module" ;; esac | strings | grep -qx svc_tcp_handshake
+      joinConfiguration:
+        nodeRegistration:
+          name: '{{ ds.meta_data.local_hostname }}'
+          kubeletExtraArgs:
+            - name: cloud-provider
+              value: external
+            - name: feature-gates
+              value: "CSIVolumeHealth=true,PodCertificateRequest=true,SELinuxMount=true"
+            - name: node-labels
+              value: "zfs.csi.randomvariable.co.uk/storage-owner=storage-b"
+            - name: register-with-taints
+              value: "zfs.csi.randomvariable.co.uk/storage=true:NoSchedule"
+          criSocket: "${CRI_PATH}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-storage-b"
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+    zfs-csi.randomvariable.co.uk/run-id: "${E2E_RUN_ID}"
+spec:
+  template:
+    spec:
+      instanceType: "${AWS_STORAGE_INSTANCE_TYPE}"
+      iamInstanceProfile: nodes.cluster-api-provider-aws.sigs.k8s.io
+      ami:
+        id: "${AWS_AMI_ID}"
+      sshKeyName: "${AWS_SSH_KEY_NAME}"
+      assignPrimaryIPv6: enabled
+      additionalTags:
+        zfs-csi-e2e: "owned"
+        zfs-csi-e2e-cluster: "${CLUSTER_NAME}"
+        zfs-csi-e2e-owner: storage-b
+      rootVolume:
+        deviceName: "${AWS_ROOT_DEVICE_NAME}"
+        size: ${AWS_ROOT_DISK_SIZE_GIB}
+        type: gp3
+      nonRootVolumes:
+        - deviceName: "/dev/xvdb"
+          size: ${AWS_DATA_DISK_SIZE_GIB}
+          type: gp3
+---
+apiVersion: addons.cluster.x-k8s.io/v1beta1
+kind: ClusterResourceSet
+metadata:
+  name: crs-ccm
+  namespace: "${NAMESPACE}"
+  labels:
+    app.kubernetes.io/name: zfs-csi-e2e
+    app.kubernetes.io/managed-by: ginkgo-e2e
+spec:
+  clusterSelector:
+    matchLabels:
+      ccm: external
+  resources:
+  - kind: ConfigMap
+    name: cloud-controller-manager-addon
+  strategy: ApplyOnce
+---
+apiVersion: v1
+data:
+  aws-ccm-external.yaml: |
+    ---
+    apiVersion: apps/v1
+    kind: DaemonSet
+    metadata:
+      name: aws-cloud-controller-manager
+      namespace: kube-system
+      labels:
+        k8s-app: aws-cloud-controller-manager
+    spec:
+      selector:
+        matchLabels:
+          k8s-app: aws-cloud-controller-manager
+      updateStrategy:
+        type: RollingUpdate
+      template:
+        metadata:
+          labels:
+            k8s-app: aws-cloud-controller-manager
+        spec:
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            # The CCM must run on a fresh control-plane node that is still
+            # NotReady (no CNI yet) so it can set providerID and let CNI be
+            # applied. A DaemonSet does NOT auto-tolerate
+            # node.kubernetes.io/not-ready:NoSchedule (only the NoExecute
+            # variant), so without a catch-all the DS controller counts the CP
+            # node ineligible (desired=0) and the cluster deadlocks. The
+            # nodeSelector + nodeAffinity below still confine it to control-plane
+            # nodes, so tolerating everything here is safe.
+            - operator: Exists
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: Exists
+          serviceAccountName: cloud-controller-manager
+          containers:
+            - name: aws-cloud-controller-manager
+              image: registry.k8s.io/provider-aws/cloud-controller-manager:v1.32.5
+              args:
+                - --v=2
+                - --cloud-provider=aws
+                - --use-service-account-credentials=true
+                - --configure-cloud-routes=false
+              resources:
+                requests:
+                  cpu: 200m
+          hostNetwork: true
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: cloud-controller-manager
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: cloud-controller-manager:apiserver-authentication-reader
+      namespace: kube-system
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: extension-apiserver-authentication-reader
+    subjects:
+      - apiGroup: ""
+        kind: ServiceAccount
+        name: cloud-controller-manager
+        namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: system:cloud-controller-manager
+    rules:
+    - apiGroups:
+      - ""
+      resources:
+      - events
+      verbs:
+      - create
+      - patch
+      - update
+    - apiGroups:
+      - ""
+      resources:
+      - nodes
+      verbs:
+      - '*'
+    - apiGroups:
+      - ""
+      resources:
+      - nodes/status
+      verbs:
+      - patch
+    - apiGroups:
+      - ""
+      resources:
+      - services
+      verbs:
+      - list
+      - patch
+      - update
+      - watch
+    - apiGroups:
+      - ""
+      resources:
+      - services/status
+      verbs:
+      - list
+      - patch
+      - update
+      - watch
+    - apiGroups:
+      - ""
+      resources:
+      - serviceaccounts
+      verbs:
+      - create
+      - get
+      - list
+      - watch
+    - apiGroups:
+      - ""
+      resources:
+      - persistentvolumes
+      verbs:
+      - get
+      - list
+      - update
+      - watch
+    - apiGroups:
+      - ""
+      resources:
+      - configmaps
+      verbs:
+      - list
+      - watch
+    - apiGroups:
+      - ""
+      resources:
+      - endpoints
+      verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+    - apiGroups:
+      - coordination.k8s.io
+      resources:
+      - leases
+      verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+    - apiGroups:
+      - ""
+      resources:
+      - serviceaccounts/token
+      verbs:
+      - create
+    ---
+    kind: ClusterRoleBinding
+    apiVersion: rbac.authorization.k8s.io/v1
+    metadata:
+      name: system:cloud-controller-manager
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: system:cloud-controller-manager
+    subjects:
+      - apiGroup: ""
+        kind: ServiceAccount
+        name: cloud-controller-manager
+        namespace: kube-system
+kind: ConfigMap
+metadata:
+  annotations:
+    note: generated
+  labels:
+    type: generated
+  name: cloud-controller-manager-addon
+  namespace: "${NAMESPACE}"

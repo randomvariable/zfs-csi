@@ -1,0 +1,91 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# E2E config for the CAPA (AWS) lane. Selected via E2E_CONFIG=test/e2e/e2e-config-aws.yaml.
+# Kept separate from e2e-config.yaml (KubeVirt lane) so each lane carries only
+# its own provider + variables, and CNI is per-lane data (calico-aws.yaml here,
+# calico.yaml for KubeVirt). See docs/e2e-aws-lane.md for prerequisites.
+managementClusterName: zfs-csi-e2e-aws
+providers:
+  - name: cluster-api
+    type: CoreProvider
+    versions:
+      - name: v1.13.3
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.3/core-components.yaml
+  - name: kubeadm
+    type: BootstrapProvider
+    versions:
+      - name: v1.13.3
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.3/bootstrap-components.yaml
+  - name: kubeadm
+    type: ControlPlaneProvider
+    versions:
+      - name: v1.13.3
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.3/control-plane-components.yaml
+  - name: aws
+    type: InfrastructureProvider
+    versions:
+      # Must match the CAPA version installed on the management cluster.
+      - name: v2.11.1
+        type: url
+        value: https://github.com/kubernetes-sigs/cluster-api-provider-aws/releases/download/v2.11.1/infrastructure-components.yaml
+        contract: v1beta2
+        files:
+          - sourcePath: "aws/metadata.yaml"
+            targetName: "metadata.yaml"
+          # Registered as the "zfs-csi-aws" flavor; CreateRepository copies it
+          # into the per-run clusterctl repo and ConfigCluster.Flavor="zfs-csi-aws"
+          # selects it.
+          - sourcePath: "aws/cluster-template-zfs-csi-aws.yaml"
+            targetName: "cluster-template-zfs-csi-aws.yaml"
+variables:
+  # CNI applied to the workload cluster via the framework's CNIManifestPath.
+  # calico-aws.yaml = Calico BGP manifest with IPIP=CrossSubnet (native routing
+  # within a subnet, encapsulate only across AZs). CAPA disables each instance's
+  # EC2 source/dest check at creation, so no Felix src/dst env / node IAM needed.
+  CNI: "data/cni/calico-aws.yaml"
+  CRI_PATH: "/var/run/containerd/containerd.sock"
+  # Generic worker replicas form one consumer reachability group.
+  CONSUMER_NETWORK_DOMAIN: "fabric-a"
+  E2E_RUN_ID: "unassigned"
+  # AWS lane — all required, no defaults. Suite fails fast (Validate) if the
+  # env vars aren't set, rather than silently provisioning in the wrong region.
+  AWS_REGION: ""
+  AWS_SSH_KEY_NAME: ""
+  # Public source CIDR permitted to SSH to the CAPA bastion. Deliberately has
+  # no open default; callers must supply an explicit CIDR such as 203.0.113.5/32.
+  E2E_AWS_BASTION_ALLOWED_CIDR: ""
+  AWS_AMI_ID: ""
+  AWS_CONTROL_PLANE_INSTANCE_TYPE: "t3a.medium"
+  AWS_NODE_INSTANCE_TYPE: "t3a.medium"
+  AWS_STORAGE_INSTANCE_TYPE: "t3a.medium"
+  # AMI root device is /dev/sda1 (verified via IMDS block-device-mapping on the
+  # CAPI ubuntu-24.04 AMI: ami->sda1, root->/dev/sda1). Using a different name
+  # (e.g. /dev/xvda) makes EC2 keep the small baked root AND attach a phantom
+  # extra disk instead of resizing root (substrate probe finding).
+  AWS_ROOT_DEVICE_NAME: "/dev/sda1"
+  AWS_ROOT_DISK_SIZE_GIB: "50"
+  AWS_DATA_DISK_SIZE_GIB: "100"
+intervals:
+  # AWS provisioning is slower than KubeVirt-on-bare-metal: EC2 launch, EBS
+  # attach, cloud-init + apt module install on first boot, kubeadm. Generous
+  # timeouts to avoid flake on first-run image pulls.
+  default/wait-cluster: ["60m", "15s"]
+  default/wait-control-plane: ["60m", "15s"]
+  default/wait-worker-nodes: ["60m", "15s"]

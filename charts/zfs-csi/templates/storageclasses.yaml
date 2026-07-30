@@ -1,0 +1,270 @@
+# Copyright 2026 Naadir Jeewa
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+{{- $storageClasses := dict "tankNVMe" .Values.storageClasses.tankNVMe "tankNFS" .Values.storageClasses.tankNFS "tankNFSTLS" .Values.storageClasses.tankNFSTLS "tankNVMeTLS" .Values.storageClasses.tankNVMeTLS "flashNVMe" .Values.storageClasses.flashNVMe "flashNFS" .Values.storageClasses.flashNFS -}}
+{{- if and .Values.controller.enabled .Values.node.enabled .Values.storage.enabled .Values.storageClasses.tankNFSTLS.enabled (not .Values.network.tls.enabled) -}}
+{{- fail "storageClasses.tankNFSTLS.enabled requires network.tls.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.controller.enabled .Values.node.enabled .Values.storage.enabled .Values.storageClasses.tankNVMeTLS.enabled (not .Values.network.tls.enabled) -}}
+{{- fail "storageClasses.tankNVMeTLS.enabled requires network.tls.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.controller.enabled .Values.storageClasses.tankNVMe.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNVMe.name }}
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNVMe.pool }}
+  type: block
+  transport: nvme-tcp
+  # Reserved CSI key: external-provisioner strips it from CreateVolume params and
+  # injects it as the volume capability's mount fsType (which NodeStage reads).
+  # Do NOT use a bare "fsType" param — the external-storage conformance suite
+  # copies this SC for named-fstype patterns (ext3/ext4/xfs) and ADDS
+  # csi.storage.k8s.io/fstype; a bare fsType alongside it makes external-provisioner
+  # reject the claim ("fstype specified in parameters with both ... keys"). Using
+  # the reserved key means the named pattern overrides the SAME key (no collision).
+  csi.storage.k8s.io/fstype: {{ .Values.storageClasses.tankNVMe.fsType }}
+  blocksize: {{ .Values.storageClasses.tankNVMe.blocksize | quote }}
+{{- with .Values.storageClasses.tankNVMe.mountOptions }}
+mountOptions:
+{{ toYaml . | indent 2 }}
+{{- end }}
+reclaimPolicy: {{ .Values.storageClasses.tankNVMe.reclaimPolicy }}
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.controller.enabled .Values.encryption.enabled .Values.storageClasses.tankNVMe.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNVMe.name }}-encrypted
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNVMe.pool }}
+  type: block
+  transport: nvme-tcp
+  # Reserved CSI key (see the non-encrypted SC above for the full rationale): use
+  # csi.storage.k8s.io/fstype, never a bare fsType, or the conformance named-fstype
+  # patterns collide and external-provisioner rejects the claim.
+  csi.storage.k8s.io/fstype: {{ .Values.storageClasses.tankNVMe.fsType }}
+  blocksize: {{ .Values.storageClasses.tankNVMe.blocksize | quote }}
+  # Per-volume ZFS native encryption: the controller generates a DEK via OpenBao
+  # Transit, the storage agent creates the dataset with encryption=on.
+  encrypted: "true"
+{{- with .Values.storageClasses.tankNVMe.mountOptions }}
+mountOptions:
+{{ toYaml . | indent 2 }}
+{{- end }}
+reclaimPolicy: {{ .Values.storageClasses.tankNVMe.reclaimPolicy }}
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.controller.enabled .Values.storageClasses.tankNFS.enabled }}
+{{- $nfsExportCIDRs := required "storageClasses.tankNFS.nfsExportCIDRs is required when tankNFS is enabled" .Values.storageClasses.tankNFS.nfsExportCIDRs }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNFS.name }}
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNFS.pool }}
+  type: filesystem
+  # Comma-separated IPv4/IPv6 networks permitted to mount the NFS export.
+  nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
+reclaimPolicy: {{ .Values.storageClasses.tankNFS.reclaimPolicy }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.controller.enabled .Values.encryption.enabled .Values.storageClasses.tankNFS.enabled }}
+{{- $nfsExportCIDRs := required "storageClasses.tankNFS.nfsExportCIDRs is required when tankNFS is enabled" .Values.storageClasses.tankNFS.nfsExportCIDRs }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNFS.name }}-encrypted
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNFS.pool }}
+  type: filesystem
+  nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
+  encrypted: "true"
+reclaimPolicy: {{ .Values.storageClasses.tankNFS.reclaimPolicy }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.storageClasses.tankNFSTLS.enabled .Values.network.tls.enabled .Values.controller.enabled .Values.node.enabled .Values.storage.enabled }}
+{{- $nfsExportCIDRs := required "storageClasses.tankNFSTLS.nfsExportCIDRs is required when tankNFSTLS is enabled" .Values.storageClasses.tankNFSTLS.nfsExportCIDRs }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNFSTLS.name }}
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNFSTLS.pool }}
+  type: filesystem
+  nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
+  nfsTLS: "true"
+reclaimPolicy: {{ .Values.storageClasses.tankNFSTLS.reclaimPolicy }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.storageClasses.tankNFSTLS.enabled .Values.network.tls.enabled .Values.encryption.enabled .Values.controller.enabled .Values.node.enabled .Values.storage.enabled }}
+{{- $nfsExportCIDRs := required "storageClasses.tankNFSTLS.nfsExportCIDRs is required when tankNFSTLS is enabled" .Values.storageClasses.tankNFSTLS.nfsExportCIDRs }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNFSTLS.name }}-encrypted
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNFSTLS.pool }}
+  type: filesystem
+  nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
+  nfsTLS: "true"
+  encrypted: "true"
+reclaimPolicy: {{ .Values.storageClasses.tankNFSTLS.reclaimPolicy }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.storageClasses.tankNVMeTLS.enabled .Values.network.tls.enabled .Values.controller.enabled .Values.node.enabled .Values.storage.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNVMeTLS.name }}
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNVMeTLS.pool }}
+  type: block
+  transport: nvme-tcp
+  # Filesystem mode only; raw block consumers ignore this hint.
+  csi.storage.k8s.io/fstype: {{ .Values.storageClasses.tankNVMeTLS.fsType }}
+  blocksize: {{ .Values.storageClasses.tankNVMeTLS.blocksize | quote }}
+  nvmeTLS: "true"
+{{- with .Values.storageClasses.tankNVMeTLS.mountOptions }}
+mountOptions:
+{{ toYaml . | indent 2 }}
+{{- end }}
+reclaimPolicy: {{ .Values.storageClasses.tankNVMeTLS.reclaimPolicy }}
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.storageClasses.tankNVMeTLS.enabled .Values.network.tls.enabled .Values.encryption.enabled .Values.controller.enabled .Values.node.enabled .Values.storage.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.tankNVMeTLS.name }}-encrypted
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.tankNVMeTLS.pool }}
+  type: block
+  transport: nvme-tcp
+  csi.storage.k8s.io/fstype: {{ .Values.storageClasses.tankNVMeTLS.fsType }}
+  blocksize: {{ .Values.storageClasses.tankNVMeTLS.blocksize | quote }}
+  nvmeTLS: "true"
+  encrypted: "true"
+{{- with .Values.storageClasses.tankNVMeTLS.mountOptions }}
+mountOptions:
+{{ toYaml . | indent 2 }}
+{{- end }}
+reclaimPolicy: {{ .Values.storageClasses.tankNVMeTLS.reclaimPolicy }}
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.controller.enabled .Values.storageClasses.flashNVMe.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.flashNVMe.name }}
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.flashNVMe.pool }}
+  type: block
+  transport: nvme-tcp
+  # Reserved CSI key (see tankNVMe SC for rationale): never a bare fsType.
+  csi.storage.k8s.io/fstype: {{ .Values.storageClasses.flashNVMe.fsType }}
+  blocksize: {{ .Values.storageClasses.flashNVMe.blocksize | quote }}
+{{- with .Values.storageClasses.flashNVMe.mountOptions }}
+mountOptions:
+{{ toYaml . | indent 2 }}
+{{- end }}
+reclaimPolicy: {{ .Values.storageClasses.flashNVMe.reclaimPolicy }}
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.controller.enabled .Values.encryption.enabled .Values.storageClasses.flashNVMe.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.flashNVMe.name }}-encrypted
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.flashNVMe.pool }}
+  type: block
+  transport: nvme-tcp
+  csi.storage.k8s.io/fstype: {{ .Values.storageClasses.flashNVMe.fsType }}
+  blocksize: {{ .Values.storageClasses.flashNVMe.blocksize | quote }}
+  encrypted: "true"
+{{- with .Values.storageClasses.flashNVMe.mountOptions }}
+mountOptions:
+{{ toYaml . | indent 2 }}
+{{- end }}
+reclaimPolicy: {{ .Values.storageClasses.flashNVMe.reclaimPolicy }}
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.controller.enabled .Values.storageClasses.flashNFS.enabled }}
+{{- $nfsExportCIDRs := required "storageClasses.flashNFS.nfsExportCIDRs is required when flashNFS is enabled" .Values.storageClasses.flashNFS.nfsExportCIDRs }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.flashNFS.name }}
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.flashNFS.pool }}
+  type: filesystem
+  nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
+reclaimPolicy: {{ .Values.storageClasses.flashNFS.reclaimPolicy }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+{{- end }}
+
+{{- if and .Values.controller.enabled .Values.encryption.enabled .Values.storageClasses.flashNFS.enabled }}
+---
+{{- $nfsExportCIDRs := required "storageClasses.flashNFS.nfsExportCIDRs is required when flashNFS is enabled" .Values.storageClasses.flashNFS.nfsExportCIDRs }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.flashNFS.name }}-encrypted
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.flashNFS.pool }}
+  type: filesystem
+  nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
+  encrypted: "true"
+reclaimPolicy: {{ .Values.storageClasses.flashNFS.reclaimPolicy }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+{{- end }}

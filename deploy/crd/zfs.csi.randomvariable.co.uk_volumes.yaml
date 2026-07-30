@@ -1,0 +1,434 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: volumes.zfs.csi.randomvariable.co.uk
+spec:
+  group: zfs.csi.randomvariable.co.uk
+  names:
+    kind: Volume
+    listKind: VolumeList
+    plural: volumes
+    shortNames:
+    - zv
+    singular: volume
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.pool
+      name: Pool
+      type: string
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.actualCapacity
+      name: Capacity
+      type: string
+    - jsonPath: .status.state
+      name: State
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Volume is the desired + observed state of a single CSI-provisioned
+          ZFS volume.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of the Volume.
+            properties:
+              backendPath:
+                description: |-
+                  backendPath is the immutable canonical ZFS object name for an imported volume.
+                  It is empty for dynamically provisioned volumes.
+                type: string
+              capacity:
+                description: capacity is the requested size in bytes.
+                format: int64
+                minimum: 1
+                type: integer
+              compression:
+                description: compression is the ZFS compression property (on|off|lz4|zstd-<level>).
+                  Empty = inherit.
+                pattern: ^(on|off|lz4|gzip|zstd|zstd-[1-9]|zstd-[1-9]-fast)$
+                type: string
+              deletionPolicy:
+                default: Delete
+                description: deletionPolicy is Retain for imports and Delete for dynamic
+                  volumes.
+                enum:
+                - Delete
+                - Retain
+                type: string
+              encryptionKeyRef:
+                description: |-
+                  encryptionKeyRef is the OpenBao Transit key reference for the per-volume DEK.
+                  Empty means no encryption. Format: "transit/<keyName>" or "kv/<path>".
+                pattern: ^(transit|kv)/[a-zA-Z0-9._/-]{1,255}$
+                type: string
+              fsType:
+                default: xfs
+                description: fsType is the filesystem to mkfs on a block volume before
+                  mount (xfs|ext4). Ignored for filesystem type.
+                enum:
+                - xfs
+                - ext4
+                type: string
+              importFsTypeDeclaration:
+                description: |-
+                  importFsTypeDeclaration preserves the import request's explicit block
+                  format declaration. It avoids conflating raw block (empty) with the Volume
+                  CRD's historical xfs default when a VolumeImport is deleted and recreated.
+                  Set only for imported volumes.
+                enum:
+                - ""
+                - ext4
+                - xfs
+                type: string
+              networkDomain:
+                description: |-
+                  networkDomain is the immutable consumer reachability domain selected at
+                  creation. It is a topology segment value, never a storage owner identity.
+                maxLength: 63
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: networkDomain must be a valid Kubernetes label value
+                  rule: self.matches('^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$')
+                - message: networkDomain is immutable
+                  rule: self == oldSelf
+              nfsExportAccessMode:
+                default: rw
+                description: |-
+                  nfsExportAccessMode controls whether the allowed NFS CIDRs are exported read-write or read-only.
+                  The reconciler always adds root_squash and never accepts raw sharenfs strings.
+                enum:
+                - rw
+                - ro
+                type: string
+              nfsExportCIDRs:
+                description: |-
+                  nfsExportCIDRs are the IPv4 and IPv6 networks allowed to mount filesystem volumes over NFS.
+                  At least one is required for filesystem volumes and the field is ignored for block volumes.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              nfsTLSEnabled:
+                default: false
+                description: |-
+                  nfsTLSEnabled requests RPC-with-TLS for filesystem NFS consumers. It is
+                  immutable because changing transport security on an existing export can
+                  leave mounted consumers with incompatible session semantics.
+                type: boolean
+                x-kubernetes-validations:
+                - message: nfsTLSEnabled is immutable
+                  rule: self == oldSelf
+              nvmeTLSEnabled:
+                default: false
+                description: |-
+                  nvmeTLSEnabled requests TLS 1.3 PSK authentication for NVMe/TCP block
+                  consumers. It is valid only for dynamically provisioned NVMe/TCP block volumes.
+                type: boolean
+                x-kubernetes-validations:
+                - message: nvmeTLSEnabled is immutable
+                  rule: self == oldSelf
+              nvmeTLSPSKSecretName:
+                description: |-
+                  nvmeTLSPSKSecretName is the controller-derived name of the immutable Secret
+                  containing this volume's configured NVMe/TCP TLS PSK.
+                pattern: ^zfs-csi-nvme-psk-[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: nvmeTLSPSKSecretName is immutable
+                  rule: self == oldSelf
+              ownerNode:
+                description: ownerNode is the storage node that owns (materialises)
+                  this volume.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: ownerNode is immutable
+                  rule: self == oldSelf
+              pool:
+                description: pool is the ZFS pool to provision into (e.g. "tank",
+                  "flash").
+                maxLength: 63
+                minLength: 1
+                type: string
+              poolGUID:
+                description: poolGUID is the immutable ZFS pool identity in canonical
+                  non-zero decimal form.
+                maxLength: 20
+                minLength: 1
+                pattern: ^[1-9][0-9]{0,19}$
+                type: string
+                x-kubernetes-validations:
+                - message: poolGUID is immutable
+                  rule: self == oldSelf
+              provenance:
+                default: Dynamic
+                description: provenance distinguishes controller-provisioned storage
+                  from validated imports.
+                enum:
+                - Dynamic
+                - Imported
+                type: string
+              sourceSnapshotID:
+                description: |-
+                  sourceSnapshotID is the CSI snapshot handle to restore into this volume.
+                  Empty means this volume is not sourced from a snapshot.
+                minLength: 1
+                type: string
+              sourceVolumeID:
+                description: |-
+                  sourceVolumeID is the CSI volume handle to clone into this volume.
+                  Empty means this volume is not sourced from another volume.
+                minLength: 1
+                type: string
+              transport:
+                default: nvme-tcp
+                description: transport is the block transport for a block volume.
+                  Ignored for filesystem type.
+                type: string
+              type:
+                default: block
+                description: type selects zvol (block) vs dataset (filesystem).
+                type: string
+              volBlockSize:
+                description: volBlockSize is the ZFS volblocksize / recordsize property
+                  (e.g. "16k"). Empty = ZFS default.
+                pattern: ^[0-9]+[kKmMgG]?$
+                type: string
+              volName:
+                description: volName is the human-readable CSI volume name; used to
+                  derive the ZFS dataset leaf name.
+                minLength: 1
+                type: string
+              volumeID:
+                description: volumeID is the CSI volume handle (the opaque string
+                  returned to the provisioner).
+                minLength: 1
+                type: string
+            required:
+            - capacity
+            - networkDomain
+            - ownerNode
+            - pool
+            - poolGUID
+            - volName
+            - volumeID
+            type: object
+          status:
+            description: status reports the observed state of the Volume.
+            properties:
+              actualCapacity:
+                description: actualCapacity is the size ZFS actually provisioned (bytes).
+                format: int64
+                type: integer
+              capacityAccountedAt:
+                description: |-
+                  capacityAccountedAt is the pool capacity sample known to include this dataset.
+                  The storage agent owns this marker; placement treats missing, stale, or future
+                  markers as reservations.
+                format: date-time
+                type: string
+              conditions:
+                description: conditions carries reconcile health.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              datasetPath:
+                description: datasetPath is the full ZFS dataset name (e.g. tank/csi/block/<id>).
+                type: string
+              deviceGUID:
+                description: deviceGUID is a stable per-volume GUID embedded in the
+                  NVMe namespace NGUID/EUI.
+                type: string
+              exportPath:
+                description: 'exportPath is the NFS export path (filesystem type):
+                  "server7:<dataset>".'
+                type: string
+              keyStatus:
+                description: keyStatus reports ZFS native-encryption key availability
+                  (encrypted volumes).
+                type: string
+              mappedInitiators:
+                description: |-
+                  mappedInitiators is the authoritative list of consumers allowed to attach (block).
+                  Drift between this and live configfs is reconciled.
+                items:
+                  description: MappedInitiator records a consumer node that is currently
+                    allowed to attach a block volume.
+                  properties:
+                    attachedAt:
+                      description: attachedAt is when the mapping was established.
+                      format: date-time
+                      type: string
+                    initiatorID:
+                      description: initiatorID is the NQN the consumer presents.
+                      type: string
+                    nodeName:
+                      description: nodeName is the kubernetes Node name of the consumer.
+                      type: string
+                  required:
+                  - initiatorID
+                  - nodeName
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - initiatorID
+                x-kubernetes-list-type: map
+              nfsRootPath:
+                description: |-
+                  nfsRootPath is the authoritative host mountpoint serving as this host's
+                  NFSv4 pseudo-root. Consumers translate exportPath relative to this exact
+                  path; it may differ from "/<pool>" when ZFS has a custom mountpoint.
+                type: string
+              nfsServer:
+                description: nfsServer is the concrete persisted NFS endpoint host.
+                type: string
+              observedGeneration:
+                description: observedGeneration is the spec generation the controller
+                  last reconciled.
+                format: int64
+                type: integer
+              portal:
+                description: portal is the "host:port" the consumer connects to (block
+                  transport).
+                type: string
+              portalHost:
+                description: portalHost is the concrete persisted NVMe-TCP endpoint
+                  host.
+                type: string
+              portalPort:
+                description: portalPort is the concrete persisted NVMe-TCP endpoint
+                  port.
+                format: int32
+                type: integer
+              publishedInitiators:
+                description: |-
+                  publishedInitiators is the set of initiatorIDs the storage-agent has
+                  confirmed are live in the transport (configfs allow-host applied).
+                  Owned solely by the agent; the controller polls this to confirm a publish.
+                items:
+                  type: string
+                type: array
+              state:
+                description: state is the reconcile lifecycle state.
+                enum:
+                - Pending
+                - Ready
+                - ReadyToPublish
+                - Deleting
+                - Destroyed
+                - Error
+                type: string
+              targetNQN:
+                description: targetNQN is the NVMe-TCP subsystem NQN (block, nvme-tcp).
+                type: string
+              zvolPath:
+                description: zvolPath is the /dev/zvol/<pool>/csi/<type>/<id> path
+                  on server7 (block).
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: provenance is immutable
+          rule: self.spec.provenance == oldSelf.spec.provenance
+        - message: backendPath is immutable
+          rule: '!has(self.spec.backendPath) == !has(oldSelf.spec.backendPath) &&
+            (!has(self.spec.backendPath) || self.spec.backendPath == oldSelf.spec.backendPath)'
+        - message: deletionPolicy is immutable
+          rule: self.spec.deletionPolicy == oldSelf.spec.deletionPolicy
+        - message: NVMe TLS is supported only for dynamic NVMe/TCP block volumes
+          rule: '!self.spec.nvmeTLSEnabled || (self.spec.type == ''block'' && self.spec.transport
+            == ''nvme-tcp'' && self.spec.provenance == ''Dynamic'')'
+        - message: NVMe TLS requires exactly one PSK Secret reference
+          rule: self.spec.nvmeTLSEnabled == has(self.spec.nvmeTLSPSKSecretName)
+        - message: NVMe TLS PSK Secret reference must be derived from Volume metadata.name
+          rule: '!has(self.spec.nvmeTLSPSKSecretName) || self.spec.nvmeTLSPSKSecretName
+            == ''zfs-csi-nvme-psk-'' + self.metadata.name'
+    served: true
+    storage: true
+    subresources:
+      status: {}

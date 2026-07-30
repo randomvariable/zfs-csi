@@ -1,0 +1,121 @@
+{{- if and .Values.network.tls.enabled .Values.network.tls.signer.enabled (or .Values.node.enabled .Values.storage.enabled) }}
+{{- $driverNamespace := include "zfs-csi.namespace" . }}
+{{- $signingNamespace := include "zfs-csi.tlsSigningNamespace" . }}
+{{- $leafNames := list }}
+{{- $owners := .Values.storageOwners }}
+{{- if and (eq (len $owners) 0) .Values.storage.enabled }}
+{{- $owners = list (dict "name" .Values.storageNode.name) }}
+{{- end }}
+{{- range $owner := $owners }}
+{{- $enabled := true }}{{- if hasKey $owner "enabled" }}{{- $enabled = $owner.enabled }}{{- end }}
+{{- if $enabled }}{{- $leafNames = append $leafNames (include "zfs-csi.tlsServerSecretName" $owner.name) }}{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zfs-csi-tls-signer
+  namespace: {{ $signingNamespace }}
+---
+# Private authority access belongs only to the signer identity.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zfs-csi-tls-signer-ca
+  namespace: {{ $signingNamespace }}
+rules:
+  # create cannot be restricted by resourceNames; signer still uses one exact name.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["zfs-csi-tls-ca"]
+    verbs: ["get", "update"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zfs-csi-tls-signer-ca
+  namespace: {{ $signingNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zfs-csi-tls-signer-ca
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-tls-signer
+    namespace: {{ $signingNamespace }}
+---
+# Signer publishes public trust and preserves existing server-leaf Secret names.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zfs-csi-tls-signer-public
+  namespace: {{ $driverNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      # Upgrade migration: signer alone may copy then delete legacy authority.
+      - zfs-csi-tls-ca
+      - zfs-csi-tls-ca-public
+{{- range $name := $leafNames }}
+      - {{ $name | quote }}
+{{- end }}
+    verbs: ["get", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zfs-csi-tls-signer-public
+  namespace: {{ $driverNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zfs-csi-tls-signer-public
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-tls-signer
+    namespace: {{ $signingNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zfs-csi-tls-signer
+rules:
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["podcertificaterequests"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["podcertificaterequests/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["signers"]
+    resourceNames: ["zfs.csi.randomvariable.co.uk/nfs-client"]
+    verbs: ["sign"]
+  # Authority initialization must wait for the driver namespace on fresh install.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: [{{ $driverNamespace | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zfs-csi-tls-signer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zfs-csi-tls-signer
+subjects:
+  - kind: ServiceAccount
+    name: zfs-csi-tls-signer
+    namespace: {{ $signingNamespace }}
+{{- end }}
