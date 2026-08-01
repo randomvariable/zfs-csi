@@ -24,8 +24,9 @@ and would otherwise roll every workload on an unrelated chart version bump.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `image.repository` | string | `docker.io/randomvariable/zfs-csi` | Container image repository. Override with your own registry. |
+| `image.repository` | string | `ghcr.io/randomvariable/zfs-csi` | Container image repository. Override with your own registry. |
 | `image.tag` | string | `""` | Image tag. Defaults to the chart `appVersion` when empty. |
+| `image.digest` | string | `""` | Immutable image digest. When set, takes precedence over `image.tag` and renders an image reference using the digest. |
 | `image.pullPolicy` | string | `IfNotPresent` | Image pull policy. |
 
 ## Storage Node

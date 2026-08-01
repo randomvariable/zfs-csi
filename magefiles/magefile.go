@@ -2820,8 +2820,8 @@ func wrap(what string, err error) error {
 type Image mg.Namespace
 
 const (
-	defaultImageRepo   = "docker.io/randomvariable/zfs-csi"
-	defaultChartOCI    = "oci://docker.io/randomvariable"
+	defaultImageRepo   = "ghcr.io/randomvariable/zfs-csi"
+	defaultChartOCI    = "oci://ghcr.io/randomvariable"
 	defaultImageTag    = "dev"
 	imageRepoEnvName   = "ZFS_CSI_IMAGE_REPO"
 	imageTagEnvName    = "ZFS_CSI_IMAGE_TAG"
@@ -2833,7 +2833,7 @@ const (
 
 	// Golden node image publishing. The image-builder kubevirt post-processor
 	// produces a local containerdisk OCI image named "<build_name>-container-disk";
-	// Image.Golden retags+pushes it to Harbor and publishes a CDI DataSource that
+	// Image.Golden retags+pushes it to GHCR and publishes a CDI DataSource that
 	// CAPK clones per-run root PVCs from. The golden image is built once per
 	// Kubernetes minor release, so this target is run rarely and out of band.
 	goldenBuildName       = "ubuntu-2404"
@@ -2921,7 +2921,7 @@ func (Image) ChartDeps(ctx context.Context) error {
 }
 
 // Chart packages the Helm chart, stamped with the same tag as the driver image,
-// and pushes it to the Harbor OCI registry (ZFS_CSI_CHART_OCI).
+// and pushes it to the GHCR OCI registry (ZFS_CSI_CHART_OCI).
 func (Image) Chart(ctx context.Context) error {
 	tag := imageTag()
 	ociRepo := envDefaultString(chartOCIEnvName, defaultChartOCI)
@@ -2968,14 +2968,14 @@ func (Image) All(ctx context.Context) error {
 // run once per Kubernetes minor release, out of band from PR CI. Steps:
 //
 //  1. retag the local containerdisk image "<build_name>-container-disk" to the
-//     Harbor golden repo and push it;
+//     GHCR golden repo and push it;
 //  2. delete any prior golden DataSource/DataVolume/PVC (they are immutable, so
 //     a spec change — accessMode, storage class — requires recreate);
-//  3. apply a CDI DataVolume that imports the containerdisk from Harbor into a
+//  3. apply a CDI DataVolume that imports the containerdisk from GHCR into a
 //     PVC in the images namespace (source.registry, pullMethod=node);
 //  4. apply a CDI DataSource pointing at that PVC.
 //
-// Requires kubectl + docker with access to Harbor and the management cluster.
+// Requires kubectl + docker with access to GHCR and the management cluster.
 func (Image) Golden(ctx context.Context) error {
 	goldenRepo := envDefaultString(goldenRepoEnvName, defaultGoldenRepo)
 	tag := imageTag()

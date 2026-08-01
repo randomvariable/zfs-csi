@@ -23,7 +23,7 @@
 namespace: ""
 
 image:
-  repository: docker.io/randomvariable/zfs-csi
+  repository: ghcr.io/randomvariable/zfs-csi
   # tag defaults to Chart.appVersion when empty.
   tag: ""
   # digest selects an immutable image and takes precedence over tag when set.

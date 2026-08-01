@@ -52,7 +52,7 @@ spec:
         type: string
       - name: image
         type: string
-        default: docker.io/randomvariable/zfs-csi
+        default: ghcr.io/randomvariable/zfs-csi
       - name: tag
         type: string
     workspaces:
@@ -159,4 +159,6 @@ spec:
         secretName: "{{ git_auth_secret }}"
     - name: docker-config
       secret:
-        secretName: zfs-csi-dockerhub
+        # External prerequisite: create this GHCR docker config secret
+        # in the pipeline namespace with packages:write credentials.
+        secretName: zfs-csi-ghcr
