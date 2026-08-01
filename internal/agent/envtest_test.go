@@ -70,6 +70,22 @@ func TestEnvtestVolumeRequiresOwnerNode(t *testing.T) {
 		t.Fatalf("update ownerNode error = %v, want immutable validation error", err)
 	}
 
+	// ZFS fixes a zvol's volblocksize at creation and a clone inherits it from its
+	// origin, so every capacity the driver aligned against this value would become
+	// an illegal volsize if it could be edited after the fact.
+	blockSized := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "immutable-blocksize"}, Spec: testenv.VolumeSpec(zfscsiv1.VolumeSpec{
+		Pool: "tank", VolName: "immutable-blocksize", Type: zfscsiv1.VolumeTypeBlock,
+		Capacity: 1 << 20, VolumeID: "csi:tank:block:immutable-blocksize", Transport: zfscsiv1.TransportNVMeTCP,
+		VolBlockSize: zfs.DefaultVolBlockSizeValue,
+	})}
+	if err := h.Client.Create(ctx, blockSized); err != nil {
+		t.Fatal(err)
+	}
+	blockSized.Spec.VolBlockSize = "128k"
+	if err := h.Client.Update(ctx, blockSized); err == nil || !strings.Contains(err.Error(), "volBlockSize is immutable") {
+		t.Fatalf("update volBlockSize error = %v, want immutable validation error", err)
+	}
+
 	clusterIdentity := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "cluster-identity", Namespace: "ignored"}, Spec: testenv.VolumeSpec(zfscsiv1.VolumeSpec{
 		Pool: "tank", VolName: "cluster-identity", Type: zfscsiv1.VolumeTypeBlock,
 		Capacity: 1 << 20, VolumeID: "csi:tank:block:cluster-identity", Transport: zfscsiv1.TransportNVMeTCP,

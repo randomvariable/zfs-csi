@@ -30,10 +30,10 @@ reconciles it and writes `status`).
 | `backendPath` | string | Yes for `Imported` | unset | Immutable canonical ZFS object name. Empty for dynamic volumes. |
 | `deletionPolicy` | string | No | `Delete` | `Retain` for imports and `Delete` for dynamic volumes. |
 | `pool` | string | Yes | — | ZFS pool the volume is provisioned into (1–63 characters). |
-| `capacity` | integer | Yes | — | Requested size in bytes. Minimum 1. |
+| `capacity` | integer | Yes | — | Provisioned size in bytes: the capacity the storage-agent applies to ZFS (`volsize` for `block`, `refquota` for `filesystem`), not the raw CSI request. For `block` this is the CSI `required_bytes` rounded up to a multiple of the effective `volBlockSize`; for `filesystem` it is byte-exact. Minimum 1. |
 | `type` | string | No | `block` | `block` provisions a zvol; `filesystem` provisions a dataset. |
 | `fsType` | string | No | `ext4` | Filesystem to format on a block volume before mount. `ext4` or `xfs`. Ignored for `filesystem`. |
-| `volBlockSize` | string | No | ZFS default | ZFS `volblocksize`/`recordsize` (for example `16k`). |
+| `volBlockSize` | string | No | `16k` for `block`, ZFS default for `filesystem` | ZFS `volblocksize`/`recordsize` (for example `16k`); digits with an optional `k`/`K`, `m`/`M`, or `g`/`G` suffix, base 1024. Immutable after creation, enforced by a CEL validation rule on the CRD. For `block` volumes this is the alignment unit for `capacity`, and the controller always writes an explicit canonical value (a power of two between 512 bytes and 128 KiB, defaulting to `16k`) so create-time and expand-time alignment cannot diverge from an unset ZFS default. For clones and snapshot restores the controller copies the source volume's value, because `zfs clone` inherits `volblocksize` from the origin; a `block` source that records no value is rejected with `FailedPrecondition` rather than assumed to be 16 KiB, because the controller cannot read the actual ZFS property. An empty value is normal and safe on `filesystem` volumes, where `recordsize` constrains no capacity. |
 | `compression` | string | No | inherit | ZFS compression property. One of `on`, `off`, `lz4`, `gzip`, `zstd`, `zstd-<1-9>`, or `zstd-<1-9>-fast`. |
 | `encryptionKeyRef` | string | No | unset (no encryption) | OpenBao key reference for the per-volume DEK, in the form `transit/<keyName>` or `kv/<path>`. |
 | `transport` | string | No | `nvme-tcp` | Block transport. Ignored for `filesystem`. |
@@ -61,7 +61,7 @@ reconciles it and writes `status`).
 | `keyStatus` | string | Encryption key availability: `Available` or `Unavailable`. |
 | `zvolPath` | string | Host `/dev/zvol/...` path (block). |
 | `datasetPath` | string | Full ZFS dataset name (for example `tank/csi/block/<id>`). |
-| `actualCapacity` | integer | Size ZFS actually provisioned, in bytes. |
+| `actualCapacity` | integer | Size ZFS actually provisioned, in bytes. For `block` volumes this matches the aligned `spec.capacity`; the controller returns it as the CSI volume capacity. |
 
 ## Printer Columns
 

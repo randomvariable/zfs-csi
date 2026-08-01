@@ -24,6 +24,7 @@ materialised by the storage agent.
 | --- | --- | --- | --- |
 | `volumeRef` | string | Yes | Name of the parent `Volume` custom resource (same namespace). |
 | `sourceVolumeID` | string | Yes | CSI source volume handle. |
+| `sourceVolBlockSize` | string | No | Source volume's ZFS `volblocksize`/`recordsize` at snapshot time (for example `16k`). Immutable. A restore clones the snapshot and inherits this block size, so the controller aligns the restored volume's capacity to it — authoritatively, even when the parent `Volume` has been removed. Empty on filesystem sources, where `recordsize` constrains no capacity, and on snapshots taken by older drivers. `CreateSnapshot` now refuses a `block` source that itself records no block size rather than persisting an empty value here, and a restore from such a legacy snapshot is rejected with `FailedPrecondition`. |
 | `snapName` | string | Yes | Human-readable CSI snapshot name; derives the ZFS snapshot leaf. |
 | `snapshotID` | string | Yes | CSI snapshot handle returned to the snapshotter sidecar. |
 

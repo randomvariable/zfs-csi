@@ -262,6 +262,7 @@ func TestCreateSnapshotDerivesOwnerNodeAndRejectsUnavailableOwner(t *testing.T) 
 	withOwner := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "source"}, Spec: zfscsiv1.VolumeSpec{
 		Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, Capacity: 1, OwnerNode: "storage-a",
 		VolumeID: "csi:tank:block:source", VolName: "source", Transport: zfscsiv1.TransportNVMeTCP,
+		VolBlockSize: zfs.DefaultVolBlockSizeValue,
 	}}
 	c := newTestClient(t, withOwner)
 	cs := newTestController(c)
@@ -453,12 +454,12 @@ func TestCreateVolumeDeletingReservationReturnsResourceExhaustedUntilDestroyed(t
 	deleting := now.DeepCopy()
 	reserved := &zfscsiv1.Volume{
 		ObjectMeta: metav1.ObjectMeta{Name: "wedged-delete", DeletionTimestamp: deleting, Finalizers: []string{zfscsiv1.VolumeFinalizer}},
-		Spec:       zfscsiv1.VolumeSpec{OwnerNode: "node-a", Pool: "tank", PoolGUID: "1", Capacity: 90},
+		Spec:       zfscsiv1.VolumeSpec{OwnerNode: "node-a", Pool: "tank", PoolGUID: "1", Capacity: 90 * 16384},
 	}
 	c := newTestClient(t, reserved)
-	testPoolResolverWithFree(c, "node-a", "tank", "1", 100)
+	testPoolResolverWithFree(c, "node-a", "tank", "1", 100*16384)
 	cs := NewControllerServer(ControllerConfig{Log: logr.Discard(), Client: c, APIReader: c, Namespace: "zfs-csi-system", Portal: "server7:4420"})
-	req := &csi.CreateVolumeRequest{Name: "after-wedged-delete", CapacityRange: &csi.CapacityRange{RequiredBytes: 11}, Parameters: map[string]string{"pool": "tank", "type": "block"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}}
+	req := &csi.CreateVolumeRequest{Name: "after-wedged-delete", CapacityRange: &csi.CapacityRange{RequiredBytes: 11 * 16384}, Parameters: map[string]string{"pool": "tank", "type": "block"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}}
 	if _, err := cs.CreateVolume(t.Context(), req); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("deleting reservation error=%v, want ResourceExhausted", err)
 	}
@@ -544,7 +545,7 @@ func TestCreateVolume_WritesSnapshotCloneSourceToCR(t *testing.T) {
 	c := newTestClient(t)
 	cs := newTestController(c)
 	snapshotID := "csi:tank:block:source@snap-a"
-	if err := c.Create(context.Background(), &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "snap-a"}, Spec: zfscsiv1.SnapshotSpec{SourceVolumeID: "csi:tank:block:source", SnapshotID: snapshotID, OwnerNode: "server7", PoolGUID: "1"}}); err != nil {
+	if err := c.Create(context.Background(), &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "snap-a"}, Spec: zfscsiv1.SnapshotSpec{SourceVolumeID: "csi:tank:block:source", SnapshotID: snapshotID, OwnerNode: "server7", PoolGUID: "1", SourceVolBlockSize: zfs.DefaultVolBlockSizeValue}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -631,7 +632,7 @@ func TestCreateVolume_WritesVolumeCloneSourceToCR(t *testing.T) {
 	cs := newTestController(c)
 	if err := c.Create(context.Background(), &zfscsiv1.Volume{
 		ObjectMeta: metav1.ObjectMeta{Name: "source"},
-		Spec:       zfscsiv1.VolumeSpec{Provenance: zfscsiv1.VolumeProvenanceDynamic, Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:source"},
+		Spec:       zfscsiv1.VolumeSpec{Provenance: zfscsiv1.VolumeProvenanceDynamic, Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:source", VolBlockSize: zfs.DefaultVolBlockSizeValue},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +787,7 @@ func TestVolumeSpecCompatibleTreatsNFSExportCIDRsAsSet(t *testing.T) {
 		NFSExportCIDRs: []string{"10.42.0.0/16", "2001:db8::/64"}, NFSExportAccessMode: "rw",
 	}
 	want := requestedVolume{
-		pool: "tank", capacity: 1, kind: zfscsiv1.VolumeTypeFilesystem, ownerNode: "storage-0",
+		pool: "tank", capacityRequired: 1, kind: zfscsiv1.VolumeTypeFilesystem, ownerNode: "storage-0",
 		nfsCIDRs: []string{"2001:db8::/64", "10.42.0.0/16"}, nfsMode: "rw",
 	}
 	if err := volumeSpecCompatible(existing, want); err != nil {
@@ -1037,7 +1038,7 @@ func TestCreateVolume_NVMeTLSCloneCreatesDestinationSecretWithoutMutatingSource(
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{nvmeTLSPSKSecretDataKey: []byte("source-psk")},
 	}
-	source := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "source"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", NetworkDomain: "workers", Type: zfscsiv1.VolumeTypeBlock, Transport: zfscsiv1.TransportNVMeTCP, Provenance: zfscsiv1.VolumeProvenanceDynamic, VolumeID: "csi:tank:block:source", VolName: "source", Capacity: 1 << 30, NVMeTLSEnabled: true, NVMeTLSPSKSecretName: sourceSecretName}}
+	source := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "source"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", NetworkDomain: "workers", Type: zfscsiv1.VolumeTypeBlock, Transport: zfscsiv1.TransportNVMeTCP, Provenance: zfscsiv1.VolumeProvenanceDynamic, VolumeID: "csi:tank:block:source", VolName: "source", Capacity: 1 << 30, VolBlockSize: zfs.DefaultVolBlockSizeValue, NVMeTLSEnabled: true, NVMeTLSPSKSecretName: sourceSecretName}}
 	if err := c.Create(t.Context(), sourceSecret); err != nil {
 		t.Fatal(err)
 	}
@@ -1080,7 +1081,7 @@ func TestCreateVolume_NVMeTLSCloneCreatesDestinationSecretWithoutMutatingSource(
 	}
 
 	snapshotID := "csi:tank:block:source@snap-tls"
-	if err := c.Create(t.Context(), &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "snap-tls"}, Spec: zfscsiv1.SnapshotSpec{SourceVolumeID: source.Spec.VolumeID, SnapshotID: snapshotID, OwnerNode: "server7", PoolGUID: "1"}}); err != nil {
+	if err := c.Create(t.Context(), &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "snap-tls"}, Spec: zfscsiv1.SnapshotSpec{SourceVolumeID: source.Spec.VolumeID, SnapshotID: snapshotID, OwnerNode: "server7", PoolGUID: "1", SourceVolBlockSize: zfs.DefaultVolBlockSizeValue}}); err != nil {
 		t.Fatal(err)
 	}
 	go autoReady(t, c, "restore-tls")
@@ -1282,9 +1283,13 @@ func TestCreateVolume_ConcurrentEncryptedSameNameLoserDoesNotShredWinnerKey(t *t
 	keys := &controllerRecKeys{refs: map[string][]byte{}, generateArrived: make(chan struct{}, 2), generateBarrier: make(chan struct{})}
 	servers := []*ControllerServer{newTestControllerWithKeys(c, keys), newTestControllerWithKeys(c, keys)}
 	go autoReady(t, c, "pvc-crypt-race")
+	// Each racer pins an exact capacity via limit_bytes so that whichever request
+	// wins the create, the other is genuinely incompatible under the CSI
+	// CapacityRange contract (a bare required_bytes of 1 GiB would be legitimately
+	// satisfied by a winning 2 GiB volume, which is an idempotent retry, not a conflict).
 	requests := []*csi.CreateVolumeRequest{
-		{Name: "pvc-crypt-race", CapacityRange: &csi.CapacityRange{RequiredBytes: 1 << 30}, Parameters: map[string]string{"pool": "tank", "type": "block", "encrypted": "true"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}},
-		{Name: "pvc-crypt-race", CapacityRange: &csi.CapacityRange{RequiredBytes: 2 << 30}, Parameters: map[string]string{"pool": "tank", "type": "block", "encrypted": "true"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}},
+		{Name: "pvc-crypt-race", CapacityRange: &csi.CapacityRange{RequiredBytes: 1 << 30, LimitBytes: 1 << 30}, Parameters: map[string]string{"pool": "tank", "type": "block", "encrypted": "true"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}},
+		{Name: "pvc-crypt-race", CapacityRange: &csi.CapacityRange{RequiredBytes: 2 << 30, LimitBytes: 2 << 30}, Parameters: map[string]string{"pool": "tank", "type": "block", "encrypted": "true"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}},
 	}
 	errs := make(chan error, len(servers))
 	start := make(chan struct{})
@@ -1921,7 +1926,7 @@ func TestDynamicImportPrefixedVolumeCanBeCloned(t *testing.T) {
 	c := newTestClient(t)
 	cs := newTestController(c)
 	const sourceID = "csi:tank:block:import-dynamic"
-	source := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "import-dynamic"}, Spec: zfscsiv1.VolumeSpec{Provenance: zfscsiv1.VolumeProvenanceDynamic, Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, Capacity: 1 << 30, VolumeID: sourceID}}
+	source := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "import-dynamic"}, Spec: zfscsiv1.VolumeSpec{Provenance: zfscsiv1.VolumeProvenanceDynamic, Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, Capacity: 1 << 30, VolumeID: sourceID, VolBlockSize: zfs.DefaultVolBlockSizeValue}}
 	if err := c.Create(context.Background(), source); err != nil {
 		t.Fatal(err)
 	}
@@ -2217,15 +2222,15 @@ func TestControllerExpandPinnedPoolInsufficientDoesNotReplace(t *testing.T) {
 
 func TestControllerExpandIdempotentRetrySkipsLeaseAndCapacity(t *testing.T) {
 	base := newTestClient(t)
-	volume := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "idem-grow"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:idem-grow", Capacity: 20}}
+	volume := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "idem-grow"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:idem-grow", Capacity: 20 * 16384}}
 	if err := base.Create(t.Context(), volume); err != nil {
 		t.Fatal(err)
 	}
 	faults := &placementFaultClient{Client: base, failLeaseGet: true, failInventoryList: true}
 	cs := NewControllerServer(ControllerConfig{Log: logr.Discard(), Client: faults, APIReader: faults, Namespace: "zfs-csi-system"})
 
-	resp, err := cs.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 20}})
-	if err != nil || resp.GetCapacityBytes() != 20 || !resp.GetNodeExpansionRequired() {
+	resp, err := cs.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 20 * 16384}})
+	if err != nil || resp.GetCapacityBytes() != 20*16384 || !resp.GetNodeExpansionRequired() {
 		t.Fatalf("idempotent expand response=%#v err=%v", resp, err)
 	}
 }
@@ -2254,23 +2259,23 @@ func (w *statusConflictOnceWriter) Patch(ctx context.Context, obj crclient.Objec
 
 func TestControllerExpandRetriesCapacityStatusConflict(t *testing.T) {
 	base := newTestClient(t)
-	testPoolResolverWithFree(base, "server7", "tank", "1", 100)
+	testPoolResolverWithFree(base, "server7", "tank", "1", 100*16384)
 	sample := metav1.Now()
-	volume := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "conflict-grow"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:conflict-grow", Capacity: 40}, Status: zfscsiv1.VolumeStatus{CapacityAccountedAt: &sample}}
+	volume := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "conflict-grow"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:conflict-grow", Capacity: 40 * 16384}, Status: zfscsiv1.VolumeStatus{CapacityAccountedAt: &sample}}
 	if err := base.Create(t.Context(), volume); err != nil {
 		t.Fatal(err)
 	}
 	client := &statusConflictOnceClient{Client: base}
 	cs := NewControllerServer(ControllerConfig{Log: logr.Discard(), Client: client, APIReader: client, Namespace: "zfs-csi-system"})
 
-	if _, err := cs.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 80}}); err != nil {
+	if _, err := cs.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 80 * 16384}}); err != nil {
 		t.Fatalf("expand after status conflict: %v", err)
 	}
 	got := &zfscsiv1.Volume{}
 	if err := base.Get(t.Context(), apimachinerytypes.NamespacedName{Name: volume.Name}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Spec.Capacity != 80 || got.Status.CapacityAccountedAt != nil || !client.conflicted {
+	if got.Spec.Capacity != 80*16384 || got.Status.CapacityAccountedAt != nil || !client.conflicted {
 		t.Fatalf("post-conflict volume=%#v conflicted=%v", got, client.conflicted)
 	}
 }
@@ -2280,7 +2285,7 @@ type failCapacitySpecPatchClient struct {
 }
 
 func (c *failCapacitySpecPatchClient) Patch(ctx context.Context, obj crclient.Object, patch crclient.Patch, opts ...crclient.PatchOption) error {
-	if volume, ok := obj.(*zfscsiv1.Volume); ok && volume.Spec.Capacity == 80 {
+	if volume, ok := obj.(*zfscsiv1.Volume); ok && volume.Spec.Capacity == 80*16384 {
 		return errors.New("injected capacity spec patch failure")
 	}
 	return c.Client.Patch(ctx, obj, patch, opts...)
@@ -2288,16 +2293,16 @@ func (c *failCapacitySpecPatchClient) Patch(ctx context.Context, obj crclient.Ob
 
 func TestControllerExpandSpecPatchFailureRemainsFullyReserved(t *testing.T) {
 	base := newTestClient(t)
-	testPoolResolverWithFree(base, "server7", "tank", "1", 100)
+	testPoolResolverWithFree(base, "server7", "tank", "1", 100*16384)
 	sample := metav1.Now()
-	volume := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "failed-grow"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:failed-grow", Capacity: 40}, Status: zfscsiv1.VolumeStatus{CapacityAccountedAt: &sample}}
+	volume := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "failed-grow"}, Spec: zfscsiv1.VolumeSpec{Pool: "tank", PoolGUID: "1", OwnerNode: "server7", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:failed-grow", Capacity: 40 * 16384}, Status: zfscsiv1.VolumeStatus{CapacityAccountedAt: &sample}}
 	if err := base.Create(t.Context(), volume); err != nil {
 		t.Fatal(err)
 	}
 	client := &failCapacitySpecPatchClient{Client: base}
 	cs := NewControllerServer(ControllerConfig{Log: logr.Discard(), Client: client, APIReader: client, Namespace: "zfs-csi-system"})
 
-	_, err := cs.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 80}})
+	_, err := cs.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 80 * 16384}})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("expand error=%v, want Internal", err)
 	}
@@ -2305,7 +2310,7 @@ func TestControllerExpandSpecPatchFailureRemainsFullyReserved(t *testing.T) {
 	if err := base.Get(t.Context(), apimachinerytypes.NamespacedName{Name: volume.Name}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Spec.Capacity != 40 || got.Status.CapacityAccountedAt != nil {
+	if got.Spec.Capacity != 40*16384 || got.Status.CapacityAccountedAt != nil {
 		t.Fatalf("failed spec patch exposed unsafe accounting state: spec=%d marker=%v", got.Spec.Capacity, got.Status.CapacityAccountedAt)
 	}
 }
@@ -2730,7 +2735,7 @@ func TestVolumeSpecCompatibleRejectsMismatchedNFSTLS(t *testing.T) {
 		NFSTLSEnabled: true,
 	}
 	err := volumeSpecCompatible(existing, requestedVolume{
-		pool: "tank", capacity: 1, kind: zfscsiv1.VolumeTypeFilesystem, ownerNode: "server7",
+		pool: "tank", capacityRequired: 1, kind: zfscsiv1.VolumeTypeFilesystem, ownerNode: "server7",
 		nfsTLS: false,
 	})
 	if status.Code(err) != codes.AlreadyExists {

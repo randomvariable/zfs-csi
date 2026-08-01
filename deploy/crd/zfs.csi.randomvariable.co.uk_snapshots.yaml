@@ -83,6 +83,18 @@ spec:
                   snapshotter sidecar.
                 minLength: 1
                 type: string
+              sourceVolBlockSize:
+                description: |-
+                  sourceVolBlockSize is the source Volume's ZFS volblocksize/recordsize at
+                  snapshot time (for example "16k"). A restore clones the snapshot, so the
+                  restored volume inherits this block size and its capacity must align to it.
+                  The field is authoritative when the parent Volume CR no longer exists.
+                  Empty on snapshots taken by older drivers and on filesystem sources.
+                pattern: ^[0-9]+[kKmMgG]?$
+                type: string
+                x-kubernetes-validations:
+                - message: sourceVolBlockSize is immutable
+                  rule: self == oldSelf
               sourceVolumeID:
                 description: sourceVolumeID is the CSI source volume handle.
                 minLength: 1

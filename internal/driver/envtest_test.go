@@ -39,7 +39,13 @@ import (
 	zfscsiv1 "github.com/randomvariable/zfs-csi/api/v1alpha1"
 	"github.com/randomvariable/zfs-csi/internal/psk"
 	testenv "github.com/randomvariable/zfs-csi/internal/testutil/envtest"
+	"github.com/randomvariable/zfs-csi/internal/zfs"
 )
+
+// envtestBlockSize scales the small reservation-accounting fixtures so every
+// block capacity remains a legal volsize under the driver's volblocksize
+// alignment policy while keeping the arithmetic in the tests readable.
+const envtestBlockSize = zfs.DefaultVolBlockSize
 
 func TestEnvtestCreateVolumeWritesCR(t *testing.T) {
 	ctx := context.Background()
@@ -218,6 +224,7 @@ func TestEnvtestNFSTLSCreateAndPublishContextContract(t *testing.T) {
 	}
 	patch := client.MergeFrom(vol.DeepCopy())
 	vol.Status.State = zfscsiv1.VolumeStateReady
+	vol.Status.NFSRootPath = "/tank"
 	vol.Status.NFSServer = "10.0.0.7"
 	vol.Status.ExportPath = "/tank/pvc-env-nfs-publish"
 	if err := h.Client.Status().Patch(t.Context(), vol, patch); err != nil {
@@ -307,8 +314,9 @@ func TestEnvtestNVMeTLSCloneAndRestoreUseSeparateDestinationSecrets(t *testing.T
 		Data:       map[string][]byte{nvmeTLSPSKSecretDataKey: []byte("source-psk")},
 	}
 	source := &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: "tls-source"}, Spec: zfscsiv1.VolumeSpec{
-		Pool: "tank", PoolGUID: "1", OwnerNode: "server7", NetworkDomain: "workers", Type: zfscsiv1.VolumeTypeBlock,
+		Pool: "tank", PoolGUID: "1", OwnerNode: "server7", NetworkDomain: "envtest", Type: zfscsiv1.VolumeTypeBlock,
 		Transport: zfscsiv1.TransportNVMeTCP, VolumeID: "csi:tank:block:tls-source", VolName: "tls-source", Capacity: 1 << 30,
+		VolBlockSize:   zfs.DefaultVolBlockSizeValue,
 		NVMeTLSEnabled: true, NVMeTLSPSKSecretName: nvmeTLSPSKSecretName("tls-source"),
 	}}
 	if err := h.Client.Create(t.Context(), sourceSecret); err != nil {
@@ -327,7 +335,7 @@ func TestEnvtestNVMeTLSCloneAndRestoreUseSeparateDestinationSecrets(t *testing.T
 	}
 
 	snapshotID := "csi:tank:block:tls-source@snap"
-	if err := h.Client.Create(t.Context(), &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "tls-source-snap"}, Spec: zfscsiv1.SnapshotSpec{SourceVolumeID: source.Spec.VolumeID, SnapshotID: snapshotID, OwnerNode: "server7", PoolGUID: "1"}}); err != nil {
+	if err := h.Client.Create(t.Context(), &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "snap"}, Spec: zfscsiv1.SnapshotSpec{VolumeRef: source.Name, SourceVolumeID: source.Spec.VolumeID, SnapshotID: snapshotID, SnapName: "snap", OwnerNode: "server7", PoolGUID: "1", SourceVolBlockSize: zfs.DefaultVolBlockSizeValue}}); err != nil {
 		t.Fatal(err)
 	}
 	restoreReq := envtestCreateRequest("pvc-env-tls-restore", 1<<30)
@@ -381,7 +389,7 @@ func TestEnvtestConcurrentPlacementDoesNotOvercommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := node.DeepCopy()
-	node.Status.Pools[0].FreeBytes = 100
+	node.Status.Pools[0].FreeBytes = 100 * envtestBlockSize
 	if err := h.Client.Status().Patch(ctx, node, client.MergeFrom(before)); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +402,7 @@ func TestEnvtestConcurrentPlacementDoesNotOvercommit(t *testing.T) {
 		go func(i int) {
 			requestCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			defer cancel()
-			_, err := servers[i].CreateVolume(requestCtx, &csi.CreateVolumeRequest{Name: fmt.Sprintf("concurrent-%d", i), CapacityRange: &csi.CapacityRange{RequiredBytes: 60}, Parameters: map[string]string{"pool": "tank", "type": "block"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}})
+			_, err := servers[i].CreateVolume(requestCtx, &csi.CreateVolumeRequest{Name: fmt.Sprintf("concurrent-%d", i), CapacityRange: &csi.CapacityRange{RequiredBytes: 60 * envtestBlockSize}, Parameters: map[string]string{"pool": "tank", "type": "block"}, VolumeCapabilities: []*csi.VolumeCapability{{AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}}, AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}}})
 			errs <- err
 		}(i)
 	}
@@ -424,9 +432,9 @@ func TestEnvtestConcurrentPlacementDoesNotOvercommit(t *testing.T) {
 }
 
 func TestEnvtestConcurrentCreateAndExpandShareReservation(t *testing.T) {
-	h, cs := envtestExpansionController(t, 100)
+	h, cs := envtestExpansionController(t, 100*envtestBlockSize)
 	defer h.Stop(t)
-	volume := envtestCreateVolume(t, h, "existing", 40)
+	volume := envtestCreateVolume(t, h, "existing", 40*envtestBlockSize)
 	markEnvtestCapacityAccounted(t, h.Client, volume.Name)
 
 	start := make(chan struct{})
@@ -435,14 +443,14 @@ func TestEnvtestConcurrentCreateAndExpandShareReservation(t *testing.T) {
 		<-start
 		requestCtx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 		defer cancel()
-		_, err := cs[0].ControllerExpandVolume(requestCtx, &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 100}})
+		_, err := cs[0].ControllerExpandVolume(requestCtx, &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 100 * envtestBlockSize}})
 		errs <- err
 	}()
 	go func() {
 		<-start
 		requestCtx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 		defer cancel()
-		_, err := cs[1].CreateVolume(requestCtx, envtestCreateRequest("new", 60))
+		_, err := cs[1].CreateVolume(requestCtx, envtestCreateRequest("new", 60*envtestBlockSize))
 		errs <- err
 	}()
 	close(start)
@@ -450,10 +458,10 @@ func TestEnvtestConcurrentCreateAndExpandShareReservation(t *testing.T) {
 }
 
 func TestEnvtestConcurrentExpandsDoNotLostUpdateOrOvercommit(t *testing.T) {
-	h, cs := envtestExpansionController(t, 100)
+	h, cs := envtestExpansionController(t, 100*envtestBlockSize)
 	defer h.Stop(t)
-	first := envtestCreateVolume(t, h, "grow-a", 40)
-	second := envtestCreateVolume(t, h, "grow-b", 40)
+	first := envtestCreateVolume(t, h, "grow-a", 40*envtestBlockSize)
+	second := envtestCreateVolume(t, h, "grow-b", 40*envtestBlockSize)
 	markEnvtestCapacityAccounted(t, h.Client, first.Name)
 	markEnvtestCapacityAccounted(t, h.Client, second.Name)
 
@@ -462,7 +470,7 @@ func TestEnvtestConcurrentExpandsDoNotLostUpdateOrOvercommit(t *testing.T) {
 	for i, volume := range []*zfscsiv1.Volume{first, second} {
 		go func(i int, volume *zfscsiv1.Volume) {
 			<-start
-			_, err := cs[i].ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 100}})
+			_, err := cs[i].ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{VolumeId: volume.Spec.VolumeID, CapacityRange: &csi.CapacityRange{RequiredBytes: 100 * envtestBlockSize}})
 			errs <- err
 		}(i, volume)
 	}
@@ -475,7 +483,7 @@ func TestEnvtestConcurrentExpandsDoNotLostUpdateOrOvercommit(t *testing.T) {
 		if err := h.Client.Get(t.Context(), types.NamespacedName{Name: name}, got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Spec.Capacity == 100 {
+		if got.Spec.Capacity == 100*envtestBlockSize {
 			grown++
 		}
 	}

@@ -218,10 +218,16 @@ spec:
                 description: type selects zvol (block) vs dataset (filesystem).
                 type: string
               volBlockSize:
-                description: volBlockSize is the ZFS volblocksize / recordsize property
-                  (e.g. "16k"). Empty = ZFS default.
+                description: |-
+                  volBlockSize is the ZFS volblocksize / recordsize property (e.g. "16k"). Empty = ZFS default.
+                  It is immutable: ZFS fixes a zvol's volblocksize at creation and a clone
+                  inherits it from its origin, so every capacity aligned against this value
+                  (create, expand, clone, restore) would become invalid if it could change.
                 pattern: ^[0-9]+[kKmMgG]?$
                 type: string
+                x-kubernetes-validations:
+                - message: volBlockSize is immutable
+                  rule: self == oldSelf
               volName:
                 description: volName is the human-readable CSI volume name; used to
                   derive the ZFS dataset leaf name.

@@ -38,6 +38,7 @@ var (
 	errExpandCapacityRequired = errors.New("zfs: expand capacity must be positive")
 	errSnapshotNotFound       = errors.New("zfs: snapshot does not exist")
 	errDatasetNotEncrypted    = errors.New("zfs: dataset is not encrypted")
+	errVolsizeNotAligned      = errors.New("zfs: volsize must be a multiple of volblocksize")
 )
 
 // Backend is a concurrency-safe, in-memory fake ZFS backend.
@@ -129,6 +130,15 @@ func (b *Backend) Create(ctx context.Context, opts zfs.CreateOptions) error {
 		return errBlockCapacityRequired
 	}
 
+	// Mirror the real libzfs contract: volsize must be a multiple of
+	// volblocksize, otherwise zvol creation fails. refquota on a dataset has no
+	// such constraint, so only block volumes are checked.
+	if opts.Kind == zfs.KindBlock {
+		if err := checkVolsizeAlignment(opts.Capacity, opts.VolBlockSz); err != nil {
+			return err
+		}
+	}
+
 	d := &dataset{
 		name:        opts.Name,
 		kind:        opts.Kind,
@@ -172,6 +182,20 @@ func (b *Backend) Create(ctx context.Context, opts zfs.CreateOptions) error {
 	}
 
 	b.dsets[opts.Name] = d
+
+	return nil
+}
+
+// checkVolsizeAlignment enforces the ZFS invariant that a zvol's volsize is a
+// whole number of volblocksize units. Datasets are exempt: refquota is byte-exact.
+func checkVolsizeAlignment(capacity int64, volBlockSz string) error {
+	blockSize, err := zfs.EffectiveBlockSize(volBlockSz)
+	if err != nil {
+		return err
+	}
+	if capacity%blockSize != 0 {
+		return fmt.Errorf("%w: volsize=%d volblocksize=%d", errVolsizeNotAligned, capacity, blockSize)
+	}
 
 	return nil
 }
@@ -444,6 +468,12 @@ func (b *Backend) Expand(ctx context.Context, name string, capacity int64) error
 
 	if capacity <= 0 {
 		return errExpandCapacityRequired
+	}
+
+	if d.kind == zfs.KindBlock {
+		if err := checkVolsizeAlignment(capacity, d.volBlockSz); err != nil {
+			return err
+		}
 	}
 
 	d.capacity = capacity

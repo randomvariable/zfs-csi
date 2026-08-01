@@ -142,8 +142,12 @@ type VolumeSpec struct {
 	FsType string `json:"fsType,omitempty"`
 
 	// volBlockSize is the ZFS volblocksize / recordsize property (e.g. "16k"). Empty = ZFS default.
+	// It is immutable: ZFS fixes a zvol's volblocksize at creation and a clone
+	// inherits it from its origin, so every capacity aligned against this value
+	// (create, expand, clone, restore) would become invalid if it could change.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[0-9]+[kKmMgG]?$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="volBlockSize is immutable"
 	VolBlockSize string `json:"volBlockSize,omitempty"`
 
 	// compression is the ZFS compression property (on|off|lz4|zstd-<level>). Empty = inherit.

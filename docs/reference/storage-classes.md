@@ -14,7 +14,7 @@ StorageClass parameters are passed to the driver through the `parameters` field.
 | `type` | string | No | `block` | Volume type. `block` is a ZFS zvol exported over NVMe-TCP (`ReadWriteOnce`). `filesystem` is a ZFS dataset exported over NFS (`ReadWriteMany`). |
 | `transport` | string | No | `nvme-tcp` | Block transport protocol. Only `nvme-tcp` is supported. Ignored for `filesystem` type. |
 | `fsType` | string | No | `xfs` | Filesystem formatted on a block volume before mount. One of `xfs` or `ext4`. XFS is the default for VM and sequential-I/O workloads; choose ext4 for metadata-heavy small-file loads. Ignored for `filesystem` type. |
-| `blocksize` | string | No | ZFS default | ZFS `volblocksize` for block volumes (for example `16k`). It is immutable after creation. Use `16k` for database-style I/O or `128k` for sequential/VM workloads. |
+| `blocksize` | string | No | ZFS default | ZFS `volblocksize` for block volumes (for example `16k`). Digits with an optional `k`/`K`, `m`/`M`, or `g`/`G` suffix, base 1024; must be positive. It is immutable after creation. Use `16k` for database-style I/O or `128k` for sequential/VM workloads. Block volume capacity is rounded up to a multiple of this value — see [Block Capacity Alignment](#block-capacity-alignment). |
 | `encrypted` | string | No | unset | When `"true"`, the volume is created with ZFS native encryption using a per-volume key generated via OpenBao Transit. Requires encryption to be enabled at install time. |
 | `nfsExportCIDRs` | string list | Yes for `filesystem` | — | IPv4/IPv6 CIDRs permitted to mount the NFS export. Must cover the consumer nodes' network or NFS mounts fail `access denied by server`. |
 | `nfsExportAccessMode` | string | No | driver default | Export access mode applied to the NFS export. Ignored for `block` type. |
@@ -23,6 +23,59 @@ StorageClass parameters are passed to the driver through the `parameters` field.
 | `compression` | string | No | ZFS default | ZFS compression algorithm. One of `on`, `off`, `lz4`, `gzip`, `zstd`, or a `zstd-<1-9>` / `zstd-<1-9>-fast` variant. Mutable via VolumeAttributesClass. |
 
 Parameter keys are matched case-insensitively, and unknown keys are ignored.
+
+## Block Capacity Alignment
+
+ZFS requires a zvol's `volsize` to be a whole number of `volblocksize` units. A
+PVC request such as `1Gi + 1` byte against `blocksize: "16k"` is not a legal
+`volsize`, so the driver aligns capacity instead of passing the raw request to
+ZFS.
+
+For `type=block` volumes the driver:
+
+- Rounds `required_bytes` **up** to the next multiple of the effective
+  `volblocksize`. The effective block size is the `blocksize` parameter, or
+  16 KiB when the parameter is unset. The driver persists that default
+  explicitly on `Volume.spec.volBlockSize` rather than leaving ZFS to pick one,
+  so create-time and expand-time alignment always agree.
+- Rejects the request with `InvalidArgument` when `blocksize` is not a value
+  OpenZFS accepts for a zvol (a power of two between 512 bytes and 128 KiB),
+  before any `Volume` resource is created.
+- Rejects the request with `InvalidArgument` when `limit_bytes` is set and the
+  smallest aligned capacity would exceed it, rather than over-provisioning past
+  the limit.
+- Rejects the request with `InvalidArgument` when `required_bytes` exceeds
+  `limit_bytes`.
+
+The rounded capacity is what the driver reserves during placement, persists in
+`Volume.spec.capacity`, and returns in the CSI `CreateVolume` /
+`ControllerExpandVolume` response, so the reported capacity is always the
+capacity ZFS actually provisions. A PVC may therefore bind to a PV slightly
+larger than requested — at most `volblocksize - 1` bytes.
+
+Volume expansion follows the same rule and uses the volume's own persisted
+`volBlockSize`, because expansion carries no StorageClass parameters and
+`volblocksize` is immutable after creation. A request that rounds to the volume's
+current capacity or below is a no-op and returns the current capacity.
+
+Clones and snapshot restores align to the **source** volume's `volblocksize`:
+`zfs clone` inherits `volblocksize` from the origin and cannot change it, so the
+`blocksize` parameter on the target StorageClass does not apply. A snapshot
+records its source block size on the `Snapshot` resource at creation time, so a
+restore stays correctly aligned even if the parent volume was retained and its
+`Volume` resource removed.
+
+If a `block` source records no `volblocksize` at all — a legacy `Volume` or
+`Snapshot` written before the driver persisted the value explicitly — the clone,
+restore, or `CreateSnapshot` is rejected with `FailedPrecondition`. The
+controller never reads ZFS properties (only the owning storage-agent can), so it
+has no authoritative block size for such a source, and assuming today's 16 KiB
+default could mis-align a zvol created under a different one (OpenZFS used 8 KiB
+before 2.2, and pools may override it). Filesystem sources are unaffected.
+
+`type=filesystem` volumes are byte-exact. Capacity is enforced through `refquota`
+on a dataset, which has no alignment constraint, so `recordsize` never changes
+the requested size.
 
 ## Filesystem Size And Selection
 

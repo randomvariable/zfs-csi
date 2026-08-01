@@ -39,7 +39,6 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -224,18 +223,25 @@ func (s *ControllerServer) releasePlacementLease(name, holder string) func(conte
 // requestedVolume carries the request-derived, comparable attributes of a
 // CreateVolume call for idempotency compatibility checks.
 type requestedVolume struct {
-	pool          string
-	capacity      int64
-	kind          zfscsiv1.VolumeType
-	ownerNode     string
-	poolGUID      string
-	srcSnap       string
-	srcVol        string
-	nfsCIDRs      []string
-	nfsMode       string
-	nfsTLS        bool
-	nvmeTLS       bool
-	networkDomain string
+	pool string
+	// capacityRequired and capacityLimit are the RAW CSI CapacityRange bounds of
+	// this request, not the driver's aligned provisioning capacity. Idempotency
+	// compares an already-persisted capacity against the range a retry asks for,
+	// so a retry that asks for less (or for a differently-rounded amount) is a
+	// legitimate retry rather than a conflict.
+	capacityRequired int64
+	capacityLimit    int64
+	kind             zfscsiv1.VolumeType
+	blockSize        string
+	ownerNode        string
+	poolGUID         string
+	srcSnap          string
+	srcVol           string
+	nfsCIDRs         []string
+	nfsMode          string
+	nfsTLS           bool
+	nvmeTLS          bool
+	networkDomain    string
 }
 
 // volumeSpecCompatible returns codes.AlreadyExists when an existing Volume CR is
@@ -263,10 +269,10 @@ func volumeSpecCompatible(existing *zfscsiv1.VolumeSpec, want requestedVolume) e
 		return status.Errorf(codes.AlreadyExists, "volume already exists with incompatible pool GUID (existing=%q requested=%q)", existing.PoolGUID, want.poolGUID)
 	case want.networkDomain != "" && existing.NetworkDomain != want.networkDomain:
 		return status.Errorf(codes.AlreadyExists, "volume already exists with incompatible network domain (existing=%q requested=%q)", existing.NetworkDomain, want.networkDomain)
-	case existing.Capacity != want.capacity:
+	case !capacityRangeSatisfied(existing.Capacity, want.capacityRequired, want.capacityLimit):
 		return status.Errorf(codes.AlreadyExists,
-			"volume already exists with incompatible capacity (existing=%d requested=%d)",
-			existing.Capacity, want.capacity)
+			"volume already exists with capacity %d incompatible with requested range [%d, %d]",
+			existing.Capacity, want.capacityRequired, want.capacityLimit)
 	case existing.Pool != want.pool:
 		return status.Errorf(codes.AlreadyExists,
 			"volume already exists with incompatible pool (existing=%q requested=%q)",
@@ -275,6 +281,10 @@ func volumeSpecCompatible(existing *zfscsiv1.VolumeSpec, want requestedVolume) e
 		return status.Errorf(codes.AlreadyExists,
 			"volume already exists with incompatible type (existing=%q requested=%q)",
 			existing.Type, want.kind)
+	case want.kind == zfscsiv1.VolumeTypeBlock && !sameEffectiveBlockSize(existing.VolBlockSize, want.blockSize):
+		return status.Errorf(codes.AlreadyExists,
+			"volume already exists with incompatible block size (existing=%q requested=%q)",
+			existing.VolBlockSize, want.blockSize)
 	case existing.SourceSnapshotID != want.srcSnap:
 		return status.Errorf(codes.AlreadyExists,
 			"volume already exists with incompatible source snapshot (existing=%q requested=%q)",
@@ -304,6 +314,71 @@ func volumeSpecCompatible(existing *zfscsiv1.VolumeSpec, want requestedVolume) e
 	default:
 		return nil
 	}
+}
+
+// capacityRangeSatisfied reports whether an already-provisioned capacity is
+// compatible with a same-name retry's CSI CapacityRange. CSI requires
+// AlreadyExists only when the existing volume is INCOMPATIBLE with the request,
+// and a volume is compatible when it is at least required_bytes and, when a
+// non-zero limit_bytes is given, no larger than that limit. Comparing against
+// the driver's own aligned capacity instead would wrongly reject retries that
+// ask for less than the rounded-up capacity actually provisioned, which is
+// exactly what the external-provisioner does when it retries a PVC whose
+// requested size is not a whole number of volblocksize units.
+func capacityRangeSatisfied(existing, required, limit int64) bool {
+	if required > 0 && existing < required {
+		return false
+	}
+	if limit > 0 && existing > limit {
+		return false
+	}
+
+	return true
+}
+
+// requireAuthoritativeSourceBlockSize rejects a clone/restore/snapshot whose
+// block source carries no recorded volblocksize.
+//
+// `zfs clone` inherits volblocksize from its origin and cannot change it, so a
+// derived zvol's capacity must align to the SOURCE's actual volblocksize. The
+// controller never reads ZFS properties — it is a pure CR writer, and the
+// backend property is only reachable from the owning storage-agent — so when
+// the persisted Volume/Snapshot metadata has no volblocksize the controller has
+// no authoritative value. Assuming the modern 16 KiB default would be a guess:
+// a legacy zvol created under an inherited default (8 KiB before OpenZFS 2.2,
+// or a pool-level override) would get a volsize that ZFS rejects, or silently
+// mis-sized capacity accounting. Fail closed with FailedPrecondition instead.
+//
+// Filesystem sources are unaffected: dataset recordsize places no constraint on
+// refquota, so an empty value there is intentional and safe.
+func requireAuthoritativeSourceBlockSize(kind zfscsiv1.VolumeType, blockSize, source string) error {
+	if kind != zfscsiv1.VolumeTypeBlock || blockSize != "" {
+		return nil
+	}
+
+	return status.Errorf(codes.FailedPrecondition,
+		"%s records no volblocksize: the actual ZFS block size of a block source is not readable from the controller, "+
+			"so a derived volume cannot be safely aligned", source)
+}
+
+// sameEffectiveBlockSize compares two volblocksize values by the byte size they
+// actually resolve to, so equivalent spellings ("16k", "16K", "16384") and a
+// legacy empty value that inherits the same default are all compatible. An
+// unparseable persisted value can never match a validated request.
+func sameEffectiveBlockSize(existing, want string) bool {
+	if existing == want {
+		return true
+	}
+	existingBytes, err := zfs.EffectiveBlockSize(existing)
+	if err != nil {
+		return false
+	}
+	wantBytes, err := zfs.EffectiveBlockSize(want)
+	if err != nil {
+		return false
+	}
+
+	return existingBytes == wantBytes
 }
 
 func cidrSetsEqual(a, b []string) bool {
@@ -423,11 +498,15 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	if err := validateCapabilities(req.GetVolumeCapabilities(), kind); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "capabilities: %v", err)
 	}
-	// Required bytes.
+	// Required bytes. The raw CapacityRange bounds are kept alongside the aligned
+	// provisioning capacity: alignment decides what to provision, but idempotency
+	// compatibility is judged against the range the caller actually asked for.
 	reqBytes := volBytes(req)
 	if reqBytes <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "capacity range required")
 	}
+	requiredBytes := reqBytes
+	limitBytes := req.GetCapacityRange().GetLimitBytes()
 
 	zkind, _ := kindToZfs(kind)
 	sourceSnapshotID, sourceVolumeID, err := validateVolumeContentSource(req.GetVolumeContentSource(), sp.Pool, zkind)
@@ -435,6 +514,12 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		return nil, err
 	}
 	var sourceOwner, sourcePoolGUID, sourceDomain string
+	// blockSize is the effective volblocksize this volume will actually have. For a
+	// fresh block volume parseSCParams has already canonicalised it (defaulting to
+	// 16k) so the persisted value is explicit and create/expand alignment agree.
+	// `zfs clone` inherits volblocksize from the origin and cannot change it, so a
+	// clone/restore must align to the source's block size, not the StorageClass's.
+	blockSize := sp.BlockSize
 	if sourceVolumeID != "" {
 		sourceParsed, _ := naming.ParseVolID(sourceVolumeID)
 		sourceVolume := &zfscsiv1.Volume{}
@@ -445,6 +530,11 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 			return nil, status.Error(codes.FailedPrecondition, "cloning imported volumes is not supported")
 		}
 		sourceOwner, sourcePoolGUID, sourceDomain = sourceVolume.Spec.OwnerNode, sourceVolume.Spec.PoolGUID, sourceVolume.Spec.NetworkDomain
+		blockSize = sourceVolume.Spec.VolBlockSize
+		if err := requireAuthoritativeSourceBlockSize(zfscsiv1.VolumeType(kind), blockSize,
+			fmt.Sprintf("source volume %s", sourceVolumeID)); err != nil {
+			return nil, err
+		}
 	}
 	if sourceSnapshotID != "" {
 		_, snapName, _ := naming.ParseSnapID(sourceSnapshotID)
@@ -453,6 +543,45 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 			return nil, status.Errorf(codes.NotFound, "source snapshot CR: %v", err)
 		}
 		sourceOwner, sourcePoolGUID = sourceSnapshot.Spec.OwnerNode, sourceSnapshot.Spec.PoolGUID
+		// A snapshot restore clones the snapshot's parent dataset, so the parent's
+		// volblocksize is what the new zvol will carry. The Snapshot CR records it at
+		// snapshot time and it is immutable, so it stays authoritative even when a
+		// retained parent's Volume CR has been removed. Older Snapshot CRs lack the
+		// field; those fall back to the parent Volume CR, which is equally
+		// authoritative. The StorageClass parameter is NOT a fallback here: it
+		// describes the requested volume, not the origin whose block size the restore
+		// unavoidably inherits, so an unresolvable source stays empty and is rejected
+		// below rather than silently aligned to the wrong value. Filesystem restores
+		// keep the StorageClass fallback: recordsize constrains no capacity and is a
+		// mutable dataset property, so it carries request intent rather than an
+		// inherited invariant.
+		if zfscsiv1.VolumeType(kind) == zfscsiv1.VolumeTypeBlock {
+			blockSize = ""
+		}
+		switch ref := sourceSnapshot.Spec.VolumeRef; {
+		case sourceSnapshot.Spec.SourceVolBlockSize != "":
+			blockSize = sourceSnapshot.Spec.SourceVolBlockSize
+		case ref != "":
+			parent := &zfscsiv1.Volume{}
+			switch err := s.client.Get(ctx, apimachinerytypes.NamespacedName{Name: ref}, parent); {
+			case err == nil:
+				blockSize = parent.Spec.VolBlockSize
+			case !apierrors.IsNotFound(err):
+				return nil, status.Errorf(codes.Internal, "get source snapshot parent volume CR: %v", err)
+			}
+		}
+		if err := requireAuthoritativeSourceBlockSize(zfscsiv1.VolumeType(kind), blockSize,
+			fmt.Sprintf("source snapshot %s", sourceSnapshotID)); err != nil {
+			return nil, err
+		}
+	}
+
+	// Capacity alignment must happen before placement reservation and before the
+	// Volume CR is written, so reservations and spec.capacity both carry the
+	// capacity ZFS will actually provision.
+	reqBytes, err = alignedCapacity(requiredBytes, limitBytes, zfscsiv1.VolumeType(kind), blockSize)
+	if err != nil {
+		return nil, err
 	}
 
 	// Derive volume id + CR name. The volID encodes the sanitised leaf id;
@@ -464,15 +593,17 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	crName := crNameFor(leafID)
 
 	want := requestedVolume{
-		pool:     sp.Pool,
-		capacity: reqBytes,
-		kind:     zfscsiv1.VolumeType(kind),
-		srcSnap:  sourceSnapshotID,
-		srcVol:   sourceVolumeID,
-		nfsCIDRs: sp.NFSExportCIDRs,
-		nfsMode:  sp.NFSExportAccessMode,
-		nfsTLS:   sp.NFSTLSEnabled,
-		nvmeTLS:  sp.NVMeTLSEnabled,
+		pool:             sp.Pool,
+		capacityRequired: requiredBytes,
+		capacityLimit:    limitBytes,
+		kind:             zfscsiv1.VolumeType(kind),
+		blockSize:        blockSize,
+		srcSnap:          sourceSnapshotID,
+		srcVol:           sourceVolumeID,
+		nfsCIDRs:         sp.NFSExportCIDRs,
+		nfsMode:          sp.NFSExportAccessMode,
+		nfsTLS:           sp.NFSTLSEnabled,
+		nvmeTLS:          sp.NVMeTLSEnabled,
 	}
 	if sourceOwner != "" {
 		want.ownerNode, want.poolGUID, want.networkDomain = sourceOwner, sourcePoolGUID, sourceDomain
@@ -574,7 +705,7 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 			Capacity:             reqBytes,
 			Type:                 zfscsiv1.VolumeType(kind),
 			FsType:               sp.FsType,
-			VolBlockSize:         sp.BlockSize,
+			VolBlockSize:         blockSize,
 			Compression:          sp.Compression,
 			EncryptionKeyRef:     encRef,
 			Transport:            zfscsiv1.TransportKind(sp.Transport),
@@ -941,11 +1072,21 @@ func (s *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.
 		return nil, status.Errorf(codes.NotFound, "volume CR: %v", err)
 	}
 
-	cap := req.GetCapacityRange().GetRequiredBytes()
-	if cap <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "capacity range required")
-	}
 	if err := validateExpansionIdentity(vol, req.GetVolumeId(), p); err != nil {
+		return nil, err
+	}
+
+	// Align against the volume's own effective volblocksize (persisted at
+	// creation, immutable thereafter), not a StorageClass parameter: expansion
+	// carries no parameters and `zfs set volsize` has the same alignment rule as
+	// create.
+	cap, err := alignedCapacity(
+		req.GetCapacityRange().GetRequiredBytes(),
+		req.GetCapacityRange().GetLimitBytes(),
+		vol.Spec.Type,
+		vol.Spec.VolBlockSize,
+	)
+	if err != nil {
 		return nil, err
 	}
 	if cap <= vol.Spec.Capacity {
@@ -1088,6 +1229,13 @@ func (s *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 	if source.Spec.OwnerNode == "" {
 		return nil, status.Error(codes.FailedPrecondition, "source volume owner is unavailable")
 	}
+	// A restore clones this snapshot and inherits the source's volblocksize, so the
+	// recorded value must be authoritative. Recording an empty value for a block
+	// source would bake in a guess that later restores would align to.
+	if err := requireAuthoritativeSourceBlockSize(source.Spec.Type, source.Spec.VolBlockSize,
+		fmt.Sprintf("source volume %s", req.GetSourceVolumeId())); err != nil {
+		return nil, err
+	}
 
 	snapID, err := naming.EncodeSnapID(p.Pool, p.Kind, p.ID, req.GetName())
 	if err != nil {
@@ -1108,6 +1256,9 @@ func (s *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 			SnapshotID:     snapID,
 			OwnerNode:      source.Spec.OwnerNode,
 			PoolGUID:       source.Spec.PoolGUID,
+			// Recorded so a restore can align capacity to the block size it will
+			// inherit even after a retained parent's Volume CR is gone.
+			SourceVolBlockSize: source.Spec.VolBlockSize,
 		},
 	}
 	createLog := logging.LogWith(s.log, logging.OpCreateSnapshotCR,
@@ -1668,6 +1819,50 @@ func volBytes(req *csi.CreateVolumeRequest) int64 {
 	return 0
 }
 
+// alignedCapacity applies the driver's block-volume capacity policy while
+// preserving the CSI CapacityRange contract:
+//
+//   - required_bytes > limit_bytes is an incoherent range and is rejected.
+//   - Filesystem (dataset) capacity is byte-exact: refquota has no alignment
+//     constraint.
+//   - Block (zvol) capacity is rounded UP to the next multiple of the effective
+//     volblocksize, because ZFS rejects a volsize that is not a whole number of
+//     volblocksize units.
+//   - If limit_bytes is set and no aligned capacity fits at or below it, the
+//     request is rejected rather than silently over-provisioning past the limit.
+//
+// blockSizeParam is the effective volblocksize for the volume: the StorageClass
+// parameter for a fresh volume, or the source volume's persisted value for a
+// clone/restore, which inherits volblocksize from its origin.
+func alignedCapacity(required, limit int64, kind zfscsiv1.VolumeType, blockSizeParam string) (int64, error) {
+	if required <= 0 {
+		return 0, status.Error(codes.InvalidArgument, "capacity range required")
+	}
+	if limit > 0 && required > limit {
+		return 0, status.Errorf(codes.InvalidArgument,
+			"capacity range invalid: required_bytes %d exceeds limit_bytes %d", required, limit)
+	}
+	if kind != zfscsiv1.VolumeTypeBlock {
+		return required, nil
+	}
+
+	blockSize, err := zfs.EffectiveBlockSize(blockSizeParam)
+	if err != nil {
+		return 0, status.Errorf(codes.InvalidArgument, "block size: %v", err)
+	}
+	aligned, err := zfs.AlignUp(required, blockSize)
+	if err != nil {
+		return 0, status.Errorf(codes.OutOfRange, "align capacity to volblocksize: %v", err)
+	}
+	if limit > 0 && aligned > limit {
+		return 0, status.Errorf(codes.InvalidArgument,
+			"no capacity aligned to volblocksize %d bytes fits the requested range [%d, %d]: smallest aligned capacity is %d",
+			blockSize, required, limit, aligned)
+	}
+
+	return aligned, nil
+}
+
 func volumeKindFromParams(sp scParams) string { return sp.Type }
 
 func validateCapabilities(caps []*csi.VolumeCapability, kind string) error {
@@ -1886,9 +2081,6 @@ func ensureFinalizer(finalizers *[]string, finalizer string) {
 
 	*finalizers = append(*finalizers, finalizer)
 }
-
-// resource.Quantity shim (kept for future capacity rounding).
-var _ = resource.MustParse
 
 func validateVolumeContentSource(src *csi.VolumeContentSource, pool string, kind zfs.VolumeKind) (snapshotID, volumeID string, err error) {
 	if src == nil {

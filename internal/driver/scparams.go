@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/randomvariable/zfs-csi/internal/nfs"
+	"github.com/randomvariable/zfs-csi/internal/zfs"
 )
 
 const defaultNFSExportAccessMode = nfs.DefaultExportAccessMode
@@ -40,6 +41,8 @@ var (
 	errNVMeTLSRequiresBlock     = errors.New("sc param \"nvmeTLS\" requires type=block and transport=nvme-tcp")
 	errInvalidCompression       = errors.New("mutable param \"compression\" must be on|off|lz4|gzip|zstd|zstd-<1-9>|zstd-<1-9>-fast")
 	errUnsupportedMutableParam  = errors.New("unsupported mutable parameter")
+	errInvalidBlockSize         = errors.New("sc param \"blocksize\" must be a positive size: digits with an optional k/K/m/M/g/G suffix (base 1024)")
+	errInvalidVolBlockSize      = errors.New("sc param \"blocksize\" for type=block must be a power of two between 512 and 131072 bytes")
 )
 
 // parseSCParams maps a CSI parameters map (from the StorageClass) onto scParams.
@@ -121,6 +124,22 @@ func parseSCParams(params map[string]string) (scParams, error) {
 		return p, err
 	}
 
+	// Block volumes carry an explicit, canonical volblocksize on the Volume CR so
+	// that create-time and expand-time alignment always agree and never depend on
+	// the ZFS build's default. Equivalent spellings ("16K", "16k", "16384")
+	// canonicalise to the same value, so idempotent retries compare equal.
+	if p.Type == "block" {
+		if p.BlockSize == "" {
+			p.BlockSize = zfs.DefaultVolBlockSizeValue
+		} else {
+			canonical, _, err := zfs.CanonicalVolBlockSize(p.BlockSize)
+			if err != nil {
+				return p, fmt.Errorf("%w: got %q (%v)", errInvalidVolBlockSize, p.BlockSize, err)
+			}
+			p.BlockSize = canonical
+		}
+	}
+
 	return p, nil
 }
 
@@ -199,6 +218,15 @@ func validateSCParams(p scParams) error {
 
 	if p.Transport != "nvme-tcp" {
 		return fmt.Errorf("%w: got %q", errUnsupportedTransport, p.Transport)
+	}
+
+	// Reject block sizes the driver cannot use for capacity alignment before any
+	// Volume CR is written. The CRD pattern permits "0" and unbounded digits, so
+	// zero and overflow are only caught here.
+	if p.BlockSize != "" {
+		if _, err := zfs.ParseBlockSize(p.BlockSize); err != nil {
+			return fmt.Errorf("%w: got %q (%v)", errInvalidBlockSize, p.BlockSize, err)
+		}
 	}
 	if p.Type != "block" && p.NVMeTLSSpecified {
 		return errNVMeTLSRequiresBlock

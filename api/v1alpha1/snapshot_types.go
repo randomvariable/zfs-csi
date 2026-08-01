@@ -64,6 +64,16 @@ type SnapshotSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	SourceVolumeID string `json:"sourceVolumeID"`
 
+	// sourceVolBlockSize is the source Volume's ZFS volblocksize/recordsize at
+	// snapshot time (for example "16k"). A restore clones the snapshot, so the
+	// restored volume inherits this block size and its capacity must align to it.
+	// The field is authoritative when the parent Volume CR no longer exists.
+	// Empty on snapshots taken by older drivers and on filesystem sources.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9]+[kKmMgG]?$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="sourceVolBlockSize is immutable"
+	SourceVolBlockSize string `json:"sourceVolBlockSize,omitempty"`
+
 	// snapName is the human-readable CSI snapshot name; derives the ZFS snapshot leaf.
 	// +required
 	// +kubebuilder:validation:MinLength=1

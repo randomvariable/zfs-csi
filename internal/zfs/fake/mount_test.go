@@ -11,7 +11,7 @@ func TestMountTruthMatchesCreateAndShare(t *testing.T) {
 	b := New().WithPool("tank", 1<<40)
 	ctx := context.Background()
 
-	if err := b.Create(ctx, zfs.CreateOptions{Name: "tank/block", Kind: zfs.KindBlock, Capacity: 1}); err != nil {
+	if err := b.Create(ctx, zfs.CreateOptions{Name: "tank/block", Kind: zfs.KindBlock, Capacity: 16 * 1024}); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Create(ctx, zfs.CreateOptions{Name: "tank/fs", Kind: zfs.KindFilesystem, Capacity: 1}); err != nil {
@@ -68,7 +68,7 @@ func TestCloneStartsUnmounted(t *testing.T) {
 func TestWithMountedNoOpsForMissingAndNonFilesystem(t *testing.T) {
 	ctx := context.Background()
 	b := New().WithPool("tank", 1<<40)
-	if err := b.Create(ctx, zfs.CreateOptions{Name: "tank/volume", Kind: zfs.KindBlock, Capacity: 1}); err != nil {
+	if err := b.Create(ctx, zfs.CreateOptions{Name: "tank/volume", Kind: zfs.KindBlock, Capacity: 16 * 1024}); err != nil {
 		t.Fatal(err)
 	}
 	b.WithMounted("tank/missing", true).WithMounted("tank/volume", true)
