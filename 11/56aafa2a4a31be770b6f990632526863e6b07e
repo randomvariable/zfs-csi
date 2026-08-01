@@ -1,0 +1,25 @@
+charts/zfs-csi/values.yaml
+  s_d2acd685c91009::t_ea31773b7ed14e 26
+magefiles/magefile.go
+  s_d2acd685c91009::t_ea31773b7ed14e 2823-2824,2836,2924,2971,2974,2978
+.tekton/image-release.yaml
+  s_d2acd685c91009::t_ea31773b7ed14e 55,162-164
+docs/reference/helm-values.md
+  s_d2acd685c91009::t_ea31773b7ed14e 27,29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "1156aafa2a4a31be770b6f990632526863e6b07e",
+  "prompts": {},
+  "sessions": {
+    "s_d2acd685c91009": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_042bdc1e1ffe4rZ0oAd7qX5p4H",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
