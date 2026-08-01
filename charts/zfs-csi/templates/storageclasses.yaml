@@ -21,11 +21,13 @@
 {{- if and .Values.controller.enabled .Values.node.enabled .Values.storage.enabled .Values.storageClasses.tankNVMeTLS.enabled (not .Values.network.tls.enabled) -}}
 {{- fail "storageClasses.tankNVMeTLS.enabled requires network.tls.enabled=true" -}}
 {{- end -}}
+{{- include "zfs-csi.validateDefaultStorageClass" . -}}
 {{- if and .Values.controller.enabled .Values.storageClasses.tankNVMe.enabled }}
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNVMe.name }}
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNVMe" "variant" "plain") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNVMe.pool }}
@@ -54,6 +56,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNVMe.name }}-encrypted
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNVMe" "variant" "encrypted") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNVMe.pool }}
@@ -82,6 +85,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNFS.name }}
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNFS" "variant" "plain") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNFS.pool }}
@@ -99,6 +103,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNFS.name }}-encrypted
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNFS" "variant" "encrypted") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNFS.pool }}
@@ -116,6 +121,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNFSTLS.name }}
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNFSTLS" "variant" "plain") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNFSTLS.pool }}
@@ -133,6 +139,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNFSTLS.name }}-encrypted
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNFSTLS" "variant" "encrypted") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNFSTLS.pool }}
@@ -150,6 +157,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNVMeTLS.name }}
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNVMeTLS" "variant" "plain") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNVMeTLS.pool }}
@@ -173,6 +181,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.tankNVMeTLS.name }}-encrypted
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNVMeTLS" "variant" "encrypted") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.tankNVMeTLS.pool }}
@@ -196,6 +205,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.flashNVMe.name }}
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "flashNVMe" "variant" "plain") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.flashNVMe.pool }}
@@ -218,6 +228,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.flashNVMe.name }}-encrypted
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "flashNVMe" "variant" "encrypted") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.flashNVMe.pool }}
@@ -241,6 +252,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.flashNFS.name }}
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "flashNFS" "variant" "plain") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.flashNFS.pool }}
@@ -258,6 +270,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.storageClasses.flashNFS.name }}-encrypted
+{{- include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "flashNFS" "variant" "encrypted") }}
 provisioner: zfs.csi.randomvariable.co.uk
 parameters:
   pool: {{ .Values.storageClasses.flashNFS.pool }}

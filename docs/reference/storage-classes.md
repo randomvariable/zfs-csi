@@ -113,6 +113,34 @@ Helm values. Encrypted variants render only when `encryption.enabled=true` and t
 class is enabled. Encrypted NFS variants require `nfsExportCIDRs`; TLS variants also require
 `network.tls.enabled=true` and the controller, node, and storage components enabled.
 
+### Cluster Default StorageClass
+
+By default the chart marks **no** StorageClass as the cluster default, so PVCs that
+omit `storageClassName` are unaffected by installing zfs-csi.
+
+To make exactly one chart-generated class the cluster default, set
+`storageClasses.defaultClass` to its values key (`tankNVMe`, `tankNFS`, `tankNFSTLS`,
+`tankNVMeTLS`, `flashNVMe`, or `flashNFS`). Only that one class receives
+`storageclass.kubernetes.io/is-default-class: "true"`.
+
+When `encryption.enabled=true` a selected class renders both a plaintext and an
+`-encrypted` variant. `storageClasses.defaultClassVariant` picks which one carries the
+annotation: `plain` (the default) or `encrypted`. The annotation never lands on both.
+
+```yaml
+storageClasses:
+  defaultClass: tankNVMeTLS
+  defaultClassVariant: encrypted   # -> zfs-tank-nvme-tls-encrypted is the cluster default
+```
+
+The chart fails to render, rather than silently producing no default, when the selected
+class is unknown, disabled, or not rendered by the current release (for example a TLS
+class selected while `network.tls.enabled=false`, or an `encrypted` variant selected
+while `encryption.enabled=false`).
+
+Kubernetes permits only one default StorageClass per cluster. Clear any pre-existing
+default before setting `storageClasses.defaultClass`, or PVC defaulting stays ambiguous.
+
 ## Examples
 
 A block StorageClass provisions a ZFS zvol exported over NVMe-TCP:

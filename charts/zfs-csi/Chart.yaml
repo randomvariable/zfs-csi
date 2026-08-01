@@ -23,3 +23,23 @@ appVersion: "dev"
 home: https://github.com/randomvariable/zfs-csi
 sources:
   - https://github.com/randomvariable/zfs-csi
+keywords:
+  - csi
+  - zfs
+  - storage
+  - nvme-tcp
+  - nfs
+maintainers:
+  - name: Naadir Jeewa
+    url: https://github.com/randomvariable
+annotations:
+  licenses: Apache-2.0
+# PodCertificateRequest (beta, off by default in 1.36) backs node-bound NFS mTLS
+# credentials, so the chart targets 1.36 and newer only.
+kubeVersion: ">=1.36.0-0"
+dependencies:
+  - name: common
+    repository: oci://registry-1.docker.io/bitnamicharts
+    version: 2.41.0
+    tags:
+      - bitnami-common

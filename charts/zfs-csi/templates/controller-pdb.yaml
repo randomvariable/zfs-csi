@@ -24,8 +24,7 @@ metadata:
   name: zfs-csi-controller
   namespace: {{ include "zfs-csi.namespace" . }}
   labels:
-    app.kubernetes.io/name: zfs-csi
-    app.kubernetes.io/component: controller
+{{- include "zfs-csi.labels" (dict "context" $ "component" "controller") | nindent 4 }}
 spec:
   minAvailable: {{ .Values.controller.podDisruptionBudget.minAvailable }}
   selector:

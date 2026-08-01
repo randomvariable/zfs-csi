@@ -66,8 +66,7 @@ metadata:
   name: {{ $resourceName }}
   namespace: {{ include "zfs-csi.namespace" $root }}
   labels:
-    app.kubernetes.io/name: zfs-csi
-    app.kubernetes.io/component: storage
+{{- include "zfs-csi.labels" (dict "context" $root "component" "storage") | nindent 4 }}
     zfs.csi.randomvariable.co.uk/owner: {{ $name | quote }}
 spec:
   replicas: 1

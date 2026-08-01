@@ -10,7 +10,6 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
   labels:
-    app.kubernetes.io/name: zfs-csi
-    app.kubernetes.io/component: tls-signing-authority
+{{- include "zfs-csi.labels" (dict "context" $ "component" "tls-signing-authority") | nindent 4 }}
 {{- end }}
 {{- end }}

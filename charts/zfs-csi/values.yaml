@@ -259,9 +259,22 @@ storageClasses:
     pool: tank
     nfsExportCIDRs: []
     reclaimPolicy: Delete
-  # StorageClasses are never marked as Kubernetes' default StorageClass. This
-  # chart must not affect unrelated PVCs in the cluster.
+  # Optionally mark exactly ONE chart-generated StorageClass as the cluster's
+  # default StorageClass. Empty (the default) preserves the historical
+  # behaviour: no chart StorageClass carries
+  # storageclass.kubernetes.io/is-default-class, so unrelated PVCs in the
+  # cluster are never affected by this chart.
+  #
+  # Set to one of the storageClasses keys below (tankNVMe, tankNFS, tankNFSTLS,
+  # tankNVMeTLS, flashNVMe, flashNFS). Rendering fails when the selected key is
+  # unknown, disabled, or not rendered by this release. Kubernetes allows only
+  # one default StorageClass per cluster, so clear any pre-existing default
+  # before setting this.
   defaultClass: ""
+  # Which variant of defaultClass becomes the default when encryption.enabled
+  # renders both a plaintext and an "-encrypted" class: "plain" (default) or
+  # "encrypted". Ignored when defaultClass is empty.
+  defaultClassVariant: plain
   tankNFSTLS:
     enabled: true
     name: zfs-tank-nfs-tls

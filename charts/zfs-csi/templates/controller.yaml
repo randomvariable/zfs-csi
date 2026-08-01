@@ -28,6 +28,8 @@ kind: Deployment
 metadata:
   name: zfs-csi-controller
   namespace: {{ include "zfs-csi.namespace" . }}
+  labels:
+{{- include "zfs-csi.labels" (dict "context" $ "component" "controller") | nindent 4 }}
 spec:
   replicas: {{ $replicas }}
 {{- if gt $replicas 1 }}

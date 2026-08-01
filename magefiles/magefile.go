@@ -97,6 +97,9 @@ var licenseIgnores = []string{
 	"**/zz_generated.*.go",
 	"deploy/crd/**",
 	"charts/zfs-csi/templates/crd/**",
+	// Helm dependency working tree: bitnami/common is vendored by
+	// `helm dependency build` and carries Broadcom's own Apache-2.0 headers.
+	"charts/zfs-csi/charts/**",
 	// Vendored upstream manifests — third-party copyright, do NOT stamp ours.
 	"test/e2e/data/cni/calico*.yaml",                     // Tigera / Project Calico
 	"test/e2e/data/snapshot/external-snapshotter-*.yaml", // kubernetes-csi
@@ -263,6 +266,9 @@ func (Lint) Fix(ctx context.Context) error {
 type Test mg.Namespace
 
 func (Test) Unit(ctx context.Context) error {
+	// charts/zfs-csi render tests shell out to `helm template`, which refuses to
+	// run until the pinned bitnami/common dependency is vendored under charts/.
+	mg.SerialCtxDeps(ctx, Image.ChartDeps)
 	_, err := magetools.RunBinary(ctx, "go", []string{"test", "-count=1", "-timeout", "120s", "./..."})
 	return wrap("unit tests", err)
 }
@@ -2904,6 +2910,16 @@ func (Image) Driver(ctx context.Context) error {
 	return nil
 }
 
+// ChartDeps vendors the chart's pinned Helm dependencies (bitnami/common) into
+// charts/zfs-csi/charts from Chart.lock. `helm package`, `helm template`, and
+// `helm lint` all fail without it, and the vendored tarball is not committed.
+func (Image) ChartDeps(ctx context.Context) error {
+	_, err := magetools.RunBinary(ctx, "helm", []string{
+		"dependency", "build", chartRelativeDir,
+	}, magetools.WithStdout())
+	return wrap("helm dependency build", err)
+}
+
 // Chart packages the Helm chart, stamped with the same tag as the driver image,
 // and pushes it to the Harbor OCI registry (ZFS_CSI_CHART_OCI).
 func (Image) Chart(ctx context.Context) error {
@@ -2917,6 +2933,9 @@ func (Image) Chart(ctx context.Context) error {
 	}
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
 		return fmt.Errorf("create chart output dir: %w", err)
+	}
+	if err := (Image{}).ChartDeps(ctx); err != nil {
+		return err
 	}
 	if _, err := magetools.RunBinary(ctx, "helm", []string{
 		"package", chartRelativeDir,
@@ -3104,6 +3123,14 @@ func runE2ETest(ctx context.Context, extraArgs ...string) error {
 	}
 	if err := e2econfig.Init(); err != nil {
 		return fmt.Errorf("init e2e config: %w", err)
+	}
+	// Lanes that install from the in-repo chart path (the default chart ref)
+	// need the pinned bitnami/common dependency vendored first; helm refuses to
+	// template or install a chart with an unbuilt dependency.
+	if !strings.HasPrefix(e2econfig.ChartReference(), "oci://") {
+		if err := (Image{}).ChartDeps(ctx); err != nil {
+			return err
+		}
 	}
 	runID, fromState, err := resolveE2ERunID()
 	if err != nil {

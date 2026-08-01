@@ -82,3 +82,6 @@ go.work.sum
 
 # opencode local tooling config (never commit)
 /config.json
+
+# Helm chart dependencies vendored by `helm dependency build` (pinned in Chart.lock)
+/charts/zfs-csi/charts/

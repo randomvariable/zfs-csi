@@ -4,6 +4,16 @@ This reference describes the configurable values for the `zfs-csi` Helm chart, w
 in the repository under `charts/zfs-csi`. The chart is version `0.1.0` with an `appVersion`
 of `dev`.
 
+The chart declares `kubeVersion: ">=1.36.0-0"` and depends on the pinned
+[bitnami/common](https://github.com/bitnami/charts/tree/main/bitnami/common) library chart
+(`oci://registry-1.docker.io/bitnamicharts`, version `2.41.0`, recorded in `Chart.lock`).
+Run `helm dependency build charts/zfs-csi` before `helm template`, `helm lint`, or
+`helm install` from a source checkout; packaged releases already vendor the dependency.
+The library supplies the standard `app.kubernetes.io/*` and `helm.sh/chart` object labels
+and the image-reference helper. Workload `spec.selector.matchLabels` and pod template
+labels are deliberately left unchanged, because those are immutable on existing objects
+and would otherwise roll every workload on an unrelated chart version bump.
+
 ## Top-Level Values
 
 | Key | Type | Default | Description |
@@ -82,7 +92,8 @@ required by workloads in this release.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `storageClasses.defaultClass` | string | `""` | Retained for values-file compatibility but ignored. The chart never marks a zfs-csi StorageClass as Kubernetes' default, so unrelated PVCs are unaffected. |
+| `storageClasses.defaultClass` | string | `""` | Optionally selects exactly ONE chart StorageClass to carry `storageclass.kubernetes.io/is-default-class: "true"`. Empty (the default) keeps the historical behaviour: no chart StorageClass becomes the cluster default and unrelated PVCs are unaffected. Rendering fails when the named key is unknown, disabled, or not rendered by this release. |
+| `storageClasses.defaultClassVariant` | string | `plain` | Which variant of `defaultClass` becomes the cluster default when `encryption.enabled=true` renders both: `plain` or `encrypted`. Ignored when `defaultClass` is empty. `encrypted` requires `encryption.enabled=true`. |
 | `storageClasses.<class>.enabled` | boolean | `false` | Whether the chart creates this StorageClass. `tankNFSTLS` and `tankNVMeTLS` default to `true`; plaintext and `flash*` classes default to `false`. |
 | `storageClasses.<class>.name` | string | `zfs-tank-nvme`, `zfs-tank-nfs`, `zfs-flash-nvme`, `zfs-flash-nfs`, `zfs-tank-nfs-tls`, `zfs-tank-nvme-tls` | StorageClass metadata name. |
 | `storageClasses.<class>.pool` | string | `tank` for the tank classes, `flash` for the flash classes | ZFS pool the class provisions into. |

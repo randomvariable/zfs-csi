@@ -1,0 +1,22 @@
+# Patterns to ignore when building Helm packages.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.hgignore
+.svn/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.project
+.idea/
+*.tmproj
+.vscode/
+
+# Go chart render tests execute against the working tree, never the packaged
+# chart, so they are excluded from the published artifact.
+*_test.go

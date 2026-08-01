@@ -24,8 +24,7 @@ metadata:
   name: zfs-csi-tls-signer
   namespace: {{ $signingNamespace }}
   labels:
-    app.kubernetes.io/name: zfs-csi
-    app.kubernetes.io/component: tls-signer
+{{- include "zfs-csi.labels" (dict "context" $ "component" "tls-signer") | nindent 4 }}
 spec:
   serviceName: zfs-csi-tls-signer
   replicas: {{ .Values.network.tls.signer.replicas }}

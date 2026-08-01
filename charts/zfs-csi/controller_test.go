@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -73,7 +73,7 @@ func TestStorageClassesAreNeverRenderedAsDefault(t *testing.T) {
 	}
 }
 
-func TestTLSStorageClassesIgnoreDeliberateDefaultClass(t *testing.T) {
+func TestSelectedStorageClassBecomesClusterDefault(t *testing.T) {
 	base := []string{
 		"--set", "controller.enabled=true",
 		"--set", "node.enabled=true",
@@ -91,26 +91,92 @@ func TestTLSStorageClassesIgnoreDeliberateDefaultClass(t *testing.T) {
 		"--set-json", `storageClasses.tankNFSTLS.nfsExportCIDRs=["10.0.0.0/16"]`,
 	}
 
-	for _, defaultClass := range []string{"tankNVMeTLS", "tankNFSTLS"} {
+	for defaultClass, wantName := range map[string]string{
+		"tankNVMeTLS": "zfs-tank-nvme-tls",
+		"tankNFSTLS":  "zfs-tank-nfs-tls",
+		"tankNVMe":    "zfs-tank-nvme",
+		"tankNFS":     "zfs-tank-nfs",
+	} {
 		args := append(append([]string{}, base...), "--set", "storageClasses.defaultClass="+defaultClass)
 		objects := objectsByKind(renderedObjects(t, renderChart(t, args...)), "StorageClass")
 		if len(objects) != 4 {
 			t.Fatalf("defaultClass=%s rendered %d StorageClasses, want 4", defaultClass, len(objects))
 		}
-		for _, object := range objects {
-			metadata, _ := object["metadata"].(map[string]any)
-			annotations, _ := metadata["annotations"].(map[string]any)
-			if _, ok := annotations["storageclass.kubernetes.io/is-default-class"]; ok {
-				t.Fatalf("defaultClass=%s rendered default StorageClass annotation on %s", defaultClass, objectName(object))
-			}
+		defaults := defaultAnnotatedStorageClassNames(t, objects)
+		if len(defaults) != 1 || defaults[0] != wantName {
+			t.Fatalf("defaultClass=%s annotated %v as cluster default, want exactly [%s]", defaultClass, defaults, wantName)
 		}
 	}
+}
 
-	first := storageClassManifests(t, append(append([]string{}, base...), "--set", "storageClasses.defaultClass=tankNVMeTLS")...)
-	second := storageClassManifests(t, append(append([]string{}, base...), "--set", "storageClasses.defaultClass=tankNFSTLS")...)
-	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("changing storageClasses.defaultClass changed rendered StorageClasses:\n%v\n%v", first, second)
+// The encrypted variant of a selected class carries the default annotation only
+// when defaultClassVariant selects it, so encryption never silently moves the
+// cluster default onto a different StorageClass.
+func TestDefaultStorageClassVariantSelectsEncryptedClass(t *testing.T) {
+	base := []string{
+		"--set", "controller.enabled=true",
+		"--set", "node.enabled=true",
+		"--set", "storage.enabled=true",
+		"--set", "storageNode.name=storage-0",
+		"--set-string", "storageNode.authoritativePoolGUIDs[0]=1",
+		"--set", "network.portalHost=10.0.0.7",
+		"--set", "network.nfsServer=10.0.0.7",
+		"--set", "network.tls.enabled=true",
+		"--set", "encryption.enabled=true",
+		"--set", "storageClasses.defaultClass=tankNVMeTLS",
 	}
+
+	for variant, wantName := range map[string]string{
+		"plain":     "zfs-tank-nvme-tls",
+		"encrypted": "zfs-tank-nvme-tls-encrypted",
+	} {
+		args := append(append([]string{}, base...), "--set", "storageClasses.defaultClassVariant="+variant)
+		objects := objectsByKind(renderedObjects(t, renderChart(t, args...)), "StorageClass")
+		defaults := defaultAnnotatedStorageClassNames(t, objects)
+		if len(defaults) != 1 || defaults[0] != wantName {
+			t.Fatalf("defaultClassVariant=%s annotated %v as cluster default, want exactly [%s]", variant, defaults, wantName)
+		}
+	}
+}
+
+// A selected default must actually exist in the release, otherwise the operator
+// silently gets no default StorageClass at all.
+func TestDefaultStorageClassRejectsUnrenderedSelection(t *testing.T) {
+	base := []string{
+		"--set", "controller.enabled=true",
+		"--set", "node.enabled=true",
+		"--set", "storage.enabled=true",
+		"--set", "storageNode.name=storage-0",
+		"--set-string", "storageNode.authoritativePoolGUIDs[0]=1",
+		"--set", "network.portalHost=10.0.0.7",
+		"--set", "network.nfsServer=10.0.0.7",
+		"--set", "network.tls.enabled=true",
+	}
+
+	assertRenderFails(t, append(append([]string{}, base...), "--set", "storageClasses.defaultClass=flashNVMe"),
+		`storageClasses.defaultClass "flashNVMe" requires storageClasses.flashNVMe.enabled=true`)
+	assertRenderFails(t, append(append([]string{}, base...),
+		"--set", "storageClasses.defaultClass=tankNVMeTLS",
+		"--set", "storageClasses.defaultClassVariant=encrypted"),
+		`storageClasses.defaultClass "tankNVMeTLS" with defaultClassVariant=encrypted requires encryption.enabled=true`)
+	assertRenderFails(t, []string{
+		"--set", "controller.enabled=false",
+		"--set", "storageClasses.defaultClass=tankNVMeTLS",
+	}, `is not rendered by this release`)
+}
+
+func defaultAnnotatedStorageClassNames(t *testing.T, objects []map[string]any) []string {
+	t.Helper()
+	names := make([]string, 0, len(objects))
+	for _, object := range objects {
+		metadata, _ := object["metadata"].(map[string]any)
+		annotations, _ := metadata["annotations"].(map[string]any)
+		if annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
+			names = append(names, objectName(object))
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func TestStorageClassSchemaDefaultMatchesValues(t *testing.T) {
@@ -140,15 +206,6 @@ func TestStorageClassSchemaDefaultMatchesValues(t *testing.T) {
 	if got := valuesStorageClasses["defaultClass"]; got != "" {
 		t.Fatalf("values storageClasses.defaultClass = %v, want empty string", got)
 	}
-}
-
-func storageClassManifests(t *testing.T, args ...string) map[string]string {
-	t.Helper()
-	manifests := make(map[string]string)
-	for _, object := range objectsByKind(renderedObjects(t, renderChart(t, args...)), "StorageClass") {
-		manifests[objectName(object)] = marshalObject(t, object)
-	}
-	return manifests
 }
 
 func TestPartialWorkloadRendersDoNotRequireDefaultStorageClass(t *testing.T) {
@@ -256,8 +313,6 @@ func TestEnabledTransportValuesAreValidatedIndependently(t *testing.T) {
 			"node.enabled=true",
 			"--set",
 			"storageClasses.tankNVMeTLS.enabled=false",
-			"--set",
-			"storageClasses.defaultClass=tankNFS",
 			"--set",
 			"storageClasses.tankNFS.enabled=true",
 			"--set-json",

@@ -1,0 +1,37 @@
+zfs-csi {{ .Chart.Version }} (appVersion {{ .Chart.AppVersion }}) installed as release {{ .Release.Name }}.
+
+Driver namespace: {{ include "zfs-csi.namespace" . }}
+Provisioner:      zfs.csi.randomvariable.co.uk
+
+Enabled components:
+  controller: {{ .Values.controller.enabled }}
+  node:       {{ .Values.node.enabled }}
+  storage:    {{ .Values.storage.enabled }}
+  nvmet:      {{ .Values.nvmet.enabled }}
+  transport TLS: {{ .Values.network.tls.enabled }}
+  encryption:    {{ .Values.encryption.enabled }}
+
+{{- if .Values.network.tls.enabled }}
+
+Transport TLS is enabled. This requires the PodCertificateRequest feature gate on
+kube-apiserver, kube-controller-manager, and kubelet (beta, off by default in
+Kubernetes 1.36). The TLS signing namespace {{ include "zfs-csi.tlsSigningNamespace" . }}
+carries helm.sh/resource-policy: keep and SURVIVES `helm uninstall`. Delete it only
+when intentionally retiring the private CA authority.
+{{- end }}
+
+{{- if .Values.storageClasses.defaultClass }}
+
+Cluster default StorageClass: {{ $key := .Values.storageClasses.defaultClass }}{{ (get .Values.storageClasses $key).name }}{{ if eq (.Values.storageClasses.defaultClassVariant | default "plain") "encrypted" }}-encrypted{{ end }}
+This release marks that StorageClass with storageclass.kubernetes.io/is-default-class.
+PVCs that omit storageClassName in this cluster will now bind through zfs-csi.
+{{- else }}
+
+No StorageClass in this release is marked as the cluster default. PVCs must name a
+zfs-csi StorageClass explicitly. Set storageClasses.defaultClass to change this.
+{{- end }}
+
+List the StorageClasses this release created:
+  kubectl get storageclass -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Docs: https://github.com/randomvariable/zfs-csi

@@ -202,6 +202,14 @@
           ],
           "default": ""
         },
+        "defaultClassVariant": {
+          "type": "string",
+          "enum": [
+            "plain",
+            "encrypted"
+          ],
+          "default": "plain"
+        },
         "tankNFS": {
           "$ref": "#/definitions/nfsStorageClass"
         },
@@ -224,6 +232,12 @@
           "$ref": "#/definitions/nfsStorageClass"
         },
         "tankNVMeTLS": {
+          "$ref": "#/definitions/nvmeStorageClass"
+        },
+        "flashNFS": {
+          "$ref": "#/definitions/nfsStorageClass"
+        },
+        "flashNVMe": {
           "$ref": "#/definitions/nvmeStorageClass"
         }
       }

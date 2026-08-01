@@ -1,13 +1,35 @@
+{{/*
+Driver image reference. Delegates to common.images.image, which applies the
+same digest-over-tag precedence and appVersion fallback this chart has always
+used. .Values.image.repository already carries the registry, so no global
+registry override is passed.
+*/}}
 {{- define "zfs-csi.image" -}}
-{{- if .Values.image.digest -}}
-{{ .Values.image.repository }}@{{ .Values.image.digest }}
-{{- else -}}
-{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
-{{- end -}}
+{{- include "common.images.image" (dict "imageRoot" .Values.image "global" .Values.global "chart" .Chart) -}}
 {{- end -}}
 
+{{/*
+Namespace the driver components run in. .Values.namespace keeps precedence for
+compatibility; common.names.namespace supplies the release-namespace fallback
+and the Bitnami namespaceOverride escape hatch.
+*/}}
 {{- define "zfs-csi.namespace" -}}
-{{ .Values.namespace | default .Release.Namespace }}
+{{ .Values.namespace | default (include "common.names.namespace" .) }}
+{{- end -}}
+
+{{/*
+Standard Bitnami object labels plus this chart's component label.
+
+Deliberately applied to OBJECT metadata only — never to spec.selector.matchLabels
+(immutable on Deployment/DaemonSet/StatefulSet) and never to pod template labels
+(a helm.sh/chart label changes on every chart version and would roll the node
+DaemonSet on unrelated releases). Existing selectors therefore stay byte-identical.
+
+Usage: include "zfs-csi.labels" (dict "context" $ "component" "controller")
+*/}}
+{{- define "zfs-csi.labels" -}}
+{{ include "common.labels.standard" .context }}
+app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{- define "zfs-csi.tlsSigningNamespace" -}}
@@ -95,5 +117,77 @@ tolerations:
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+
+{{/*
+Chart-generated StorageClass keys mapped to their values entry. Keeps the
+default-class selector and the StorageClass templates working from one list.
+*/}}
+{{- define "zfs-csi.storageClassKeys" -}}
+{{- print "tankNVMe tankNFS tankNFSTLS tankNVMeTLS flashNVMe flashNFS" -}}
+{{- end -}}
+
+{{/*
+Reports whether one chart StorageClass key/variant pair actually renders, using
+the same guards as templates/storageclasses.yaml. Returns "true" or "".
+Usage: include "zfs-csi.storageClassRenders" (dict "context" $ "key" "tankNVMe" "variant" "encrypted")
+*/}}
+{{- define "zfs-csi.storageClassRenders" -}}
+{{- $values := .context.Values -}}
+{{- $class := get $values.storageClasses .key -}}
+{{- $renders := and $values.controller.enabled $class.enabled -}}
+{{- if or (eq .key "tankNFSTLS") (eq .key "tankNVMeTLS") -}}
+{{- $renders = and $renders $values.network.tls.enabled $values.node.enabled $values.storage.enabled -}}
+{{- end -}}
+{{- if eq .variant "encrypted" -}}
+{{- $renders = and $renders $values.encryption.enabled -}}
+{{- end -}}
+{{- if $renders -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Validates storageClasses.defaultClass / defaultClassVariant. An empty
+defaultClass keeps the chart's historical behaviour: no chart StorageClass is
+ever marked as the cluster default, so unrelated PVCs are untouched.
+*/}}
+{{- define "zfs-csi.validateDefaultStorageClass" -}}
+{{- $key := .Values.storageClasses.defaultClass | default "" -}}
+{{- $variant := .Values.storageClasses.defaultClassVariant | default "plain" -}}
+{{- if not (has $variant (list "plain" "encrypted")) -}}
+{{- fail (printf "storageClasses.defaultClassVariant must be \"plain\" or \"encrypted\", got %q" $variant) -}}
+{{- end -}}
+{{- if $key -}}
+{{- $known := splitList " " (include "zfs-csi.storageClassKeys" .) -}}
+{{- if not (has $key $known) -}}
+{{- fail (printf "storageClasses.defaultClass %q is not a chart StorageClass; valid keys are %s" $key (join ", " $known)) -}}
+{{- end -}}
+{{- $class := get .Values.storageClasses $key -}}
+{{- if not $class.enabled -}}
+{{- fail (printf "storageClasses.defaultClass %q requires storageClasses.%s.enabled=true" $key $key) -}}
+{{- end -}}
+{{- if and (eq $variant "encrypted") (not .Values.encryption.enabled) -}}
+{{- fail (printf "storageClasses.defaultClass %q with defaultClassVariant=encrypted requires encryption.enabled=true" $key) -}}
+{{- end -}}
+{{- if not (include "zfs-csi.storageClassRenders" (dict "context" . "key" $key "variant" $variant)) -}}
+{{- fail (printf "storageClasses.defaultClass %q (%s variant) is not rendered by this release; enable controller.enabled and, for TLS classes, network.tls.enabled with node.enabled and storage.enabled" $key $variant) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Emits the Kubernetes default-StorageClass annotation for exactly the one
+selected class/variant, and nothing otherwise. Callers place it directly under
+the StorageClass metadata name.
+Usage: include "zfs-csi.storageClassDefaultAnnotation" (dict "context" $ "key" "tankNVMe" "variant" "plain")
+*/}}
+{{- define "zfs-csi.storageClassDefaultAnnotation" -}}
+{{- $values := .context.Values -}}
+{{- $selected := $values.storageClasses.defaultClass | default "" -}}
+{{- $variant := $values.storageClasses.defaultClassVariant | default "plain" -}}
+{{- if and $selected (eq $selected .key) (eq $variant .variant) }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
 {{- end -}}
 {{- end -}}

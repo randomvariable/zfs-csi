@@ -42,6 +42,8 @@ kind: DaemonSet
 metadata:
   name: zfs-csi-node
   namespace: {{ include "zfs-csi.namespace" . }}
+  labels:
+{{- include "zfs-csi.labels" (dict "context" $ "component" "node") | nindent 4 }}
 spec:
   selector:
     matchLabels:
