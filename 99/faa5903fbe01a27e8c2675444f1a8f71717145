@@ -1,0 +1,84 @@
+internal/zfs/fake/blocksize_test.go
+  s_b54ce612b41753::t_6521c7ca617375 1-89
+api/v1alpha1/volume_types.go
+  s_b54ce612b41753::t_6521c7ca617375 145-147,150
+internal/driver/envtest_test.go
+  s_407c17fb2f4ed0::t_54c0458281bd21 227,317
+  s_cd3bae37e33182::t_41e7a9bf1993a2 338
+  s_b54ce612b41753::t_6521c7ca617375 42,45-49,319,392,405,435,437,446,453,461,463-464,473,486
+api/v1alpha1/crd_contract_test.go
+  s_b54ce612b41753::t_6521c7ca617375 22,84-95,122-135,166-189
+  s_b54ce612b41753::t_2c507a49648970 190-191
+internal/agent/envtest_test.go
+  s_b54ce612b41753::t_e58f9e82859aeb 73-88
+internal/driver/controller_test.go
+  s_b54ce612b41753::t_6521c7ca617375 265,457,460,462,548,635,790,1041,1084,1286-1289,1291-1292,1929,2225,2232-2233,2262,2264,2271,2278,2288,2296,2298,2305,2313,2738
+api/v1alpha1/snapshot_types.go
+  s_b54ce612b41753::t_6521c7ca617375 67-76
+deploy/crd/zfs.csi.randomvariable.co.uk_snapshots.yaml
+  s_b54ce612b41753::t_6521c7ca617375 86-97
+charts/zfs-csi/templates/crd/zfs.csi.randomvariable.co.uk_snapshots.yaml
+  s_b54ce612b41753::t_6521c7ca617375 86-97
+internal/zfs/fake/fake.go
+  s_b54ce612b41753::t_6521c7ca617375 41,133-141,189-202,473-477
+  s_b54ce612b41753::t_70925a96f1cb94 478
+internal/zfs/fake/mount_test.go
+  s_b54ce612b41753::t_6521c7ca617375 14,71
+internal/driver/capacity_alignment_test.go
+  s_b54ce612b41753::t_6521c7ca617375 1-1085
+docs/reference/internal/snapshot.md
+  s_b54ce612b41753::t_4229e0611990d4 27
+charts/zfs-csi/templates/crd/zfs.csi.randomvariable.co.uk_volumes.yaml
+  s_b54ce612b41753::t_6521c7ca617375 221-225,228-230
+deploy/crd/zfs.csi.randomvariable.co.uk_volumes.yaml
+  s_b54ce612b41753::t_6521c7ca617375 221-225,228-230
+docs/reference/storage-classes.md
+  s_b54ce612b41753::t_6521c7ca617375 17,27-67,76-78
+  s_b54ce612b41753::t_e55ebe40f0ed27 75
+  s_b54ce612b41753::t_a263e562ed605d 68-74
+  s_b54ce612b41753::t_17aa676e027437 79
+docs/reference/internal/volume.md
+  s_b54ce612b41753::t_caa318e1ffb9a6 36
+  s_b54ce612b41753::t_6521c7ca617375 33,64
+internal/zfs/blocksize_test.go
+  s_b54ce612b41753::t_6521c7ca617375 1-187
+internal/driver/controller.go
+  s_b54ce612b41753::t_6521c7ca617375 226-244,272,274-275,284-287,319-383,501-503,508-509,517-522,533-537,546-584,596-606,708,1078-1091,1232-1238,1259-1261,1822-1864
+  s_b54ce612b41753::t_a4a1ead1b993b0 1865
+internal/driver/scparams.go
+  s_b54ce612b41753::t_6521c7ca617375 27,44-45,127-142,222-230
+internal/zfs/blocksize.go
+  s_b54ce612b41753::t_6521c7ca617375 1-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "99faa5903fbe01a27e8c2675444f1a8f71717145",
+  "prompts": {},
+  "sessions": {
+    "s_407c17fb2f4ed0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0434e0bb9ffeP4cfVCDPi8TQQP",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    },
+    "s_b54ce612b41753": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0437649b1ffe3ITWzO6XuNKEif",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    },
+    "s_cd3bae37e33182": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_043d9f203ffethxo66DBWHRpRm",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
