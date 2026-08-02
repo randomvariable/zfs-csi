@@ -344,7 +344,7 @@ func TestNFSPlugin_Stage_TLSAddsRequiredTransportSecurity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("NodeStage: %v", err)
 	}
-	if got, want := mnt.mountCalls[0].opts, []string{"vers=4.2", "nconnect=8", "xprtsec=mtls"}; !slices.Equal(got, want) {
+	if got, want := mnt.mountCalls[0].opts, []string{"vers=4.2", "xprtsec=mtls"}; !slices.Equal(got, want) {
 		t.Fatalf("opts = %v, want %v", got, want)
 	}
 }

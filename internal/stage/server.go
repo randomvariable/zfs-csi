@@ -341,7 +341,10 @@ func nfsMountFlags(userFlags []string, tls bool) ([]string, error) {
 	if !hasVersion {
 		flags = append(flags, nfsVersion)
 	}
-	if !hasNConnect {
+	// Linux RPC-with-TLS currently rejects nconnect mounts after the first
+	// connection because each transport needs a separate TLS handshake. Keep
+	// TLS staging single-connection unless the caller explicitly opts in.
+	if !hasNConnect && !tls {
 		flags = append(flags, nfsNConnect)
 	}
 	if tls && !hasXprtsec {
