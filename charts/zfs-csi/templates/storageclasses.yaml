@@ -95,7 +95,9 @@ parameters:
   type: filesystem
   # Comma-separated IPv4/IPv6 networks permitted to mount the NFS export.
   nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
-  nfsRootSquash: {{ .Values.storageClasses.tankNFS.rootSquash | quote }}
+{{- if not .Values.storageClasses.tankNFS.rootSquash }}
+  nfsRootSquash: "false"
+{{- end }}
 reclaimPolicy: {{ .Values.storageClasses.tankNFS.reclaimPolicy }}
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
@@ -113,7 +115,9 @@ parameters:
   pool: {{ .Values.storageClasses.tankNFS.pool }}
   type: filesystem
   nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
-  nfsRootSquash: {{ .Values.storageClasses.tankNFS.rootSquash | quote }}
+{{- if not .Values.storageClasses.tankNFS.rootSquash }}
+  nfsRootSquash: "false"
+{{- end }}
   encrypted: "true"
 reclaimPolicy: {{ .Values.storageClasses.tankNFS.reclaimPolicy }}
 volumeBindingMode: Immediate
@@ -132,7 +136,9 @@ parameters:
   pool: {{ .Values.storageClasses.tankNFSTLS.pool }}
   type: filesystem
   nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
-  nfsRootSquash: {{ .Values.storageClasses.tankNFSTLS.rootSquash | quote }}
+{{- if not .Values.storageClasses.tankNFSTLS.rootSquash }}
+  nfsRootSquash: "false"
+{{- end }}
   nfsTLS: "true"
 reclaimPolicy: {{ .Values.storageClasses.tankNFSTLS.reclaimPolicy }}
 volumeBindingMode: Immediate
@@ -151,7 +157,9 @@ parameters:
   pool: {{ .Values.storageClasses.tankNFSTLS.pool }}
   type: filesystem
   nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
-  nfsRootSquash: {{ .Values.storageClasses.tankNFSTLS.rootSquash | quote }}
+{{- if not .Values.storageClasses.tankNFSTLS.rootSquash }}
+  nfsRootSquash: "false"
+{{- end }}
   nfsTLS: "true"
   encrypted: "true"
 reclaimPolicy: {{ .Values.storageClasses.tankNFSTLS.reclaimPolicy }}
@@ -284,7 +292,9 @@ parameters:
   pool: {{ .Values.storageClasses.flashNFS.pool }}
   type: filesystem
   nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
-  nfsRootSquash: {{ .Values.storageClasses.flashNFS.rootSquash | quote }}
+{{- if not .Values.storageClasses.flashNFS.rootSquash }}
+  nfsRootSquash: "false"
+{{- end }}
 reclaimPolicy: {{ .Values.storageClasses.flashNFS.reclaimPolicy }}
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
@@ -303,7 +313,9 @@ parameters:
   pool: {{ .Values.storageClasses.flashNFS.pool }}
   type: filesystem
   nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
-  nfsRootSquash: {{ .Values.storageClasses.flashNFS.rootSquash | quote }}
+{{- if not .Values.storageClasses.flashNFS.rootSquash }}
+  nfsRootSquash: "false"
+{{- end }}
   encrypted: "true"
 reclaimPolicy: {{ .Values.storageClasses.flashNFS.reclaimPolicy }}
 volumeBindingMode: Immediate
