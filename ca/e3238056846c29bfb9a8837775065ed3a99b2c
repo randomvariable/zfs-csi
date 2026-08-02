@@ -1,0 +1,21 @@
+internal/stage/server.go
+  s_5bd1e7644796c6::t_656b7e95ee8824 344-347
+internal/stage/server_test.go
+  s_5bd1e7644796c6::t_656b7e95ee8824 347
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "cae3238056846c29bfb9a8837775065ed3a99b2c",
+  "prompts": {},
+  "sessions": {
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
