@@ -1,0 +1,19 @@
+charts/zfs-csi/templates/node.yaml
+  s_5bd1e7644796c6::t_8cc851cee9754a 80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "1c506d56d4bb981f450756f316c16ed089d55ad2",
+  "prompts": {},
+  "sessions": {
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
