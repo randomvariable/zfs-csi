@@ -199,6 +199,7 @@ func TestStartNFSDLifecycleOrdersKernelConfigurationAndOwnsThreads(t *testing.T)
 		"write /proc/fs/nfsd/threads=8\n",
 		"read /proc/fs/nfsd/threads",
 	}
+	want = append(want[:3], append([]string{"read /sys/kernel/debug/nfsd/delegated_timestamps", "mount debugfs /sys/kernel/debug debugfs", "read /sys/kernel/debug/nfsd/delegated_timestamps"}, want[3:]...)...)
 	if len(got) != len(want) {
 		t.Fatalf("calls = %#v, want %#v", got, want)
 	}
@@ -206,6 +207,82 @@ func TestStartNFSDLifecycleOrdersKernelConfigurationAndOwnsThreads(t *testing.T)
 		if got[i] != want[i] {
 			t.Fatalf("calls[%d] = %q, want %q; calls = %#v", i, got[i], want[i], calls)
 		}
+	}
+}
+
+func TestConfigureNFSDDelegatedTimestamps(t *testing.T) {
+	tests := []struct {
+		name       string
+		initial    string
+		writeErr   error
+		readback   string
+		wantErr    string
+		wantWrites int
+	}{
+		{name: "enabled", initial: "Y\n", readback: "N\n", wantWrites: 1},
+		{name: "disabled", initial: "N\n", wantWrites: 0},
+		{name: "unsupported", wantWrites: 0},
+		{name: "malformed", initial: "1\n", wantErr: "want Y or N", wantWrites: 0},
+		{name: "write failure", initial: "Y\n", writeErr: syscall.EACCES, wantErr: "disable delegated timestamps", wantWrites: 1},
+		{name: "readback still enabled", initial: "Y\n", readback: "Y\n", wantErr: "remains enabled", wantWrites: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := nfsdProcFS
+			t.Cleanup(func() { nfsdProcFS = old })
+			path := "/sys/kernel/debug/nfsd/delegated_timestamps"
+			writes := 0
+			nfsdProcFS = nfsdProcFSOps{
+				ReadFile: func(name string) ([]byte, error) {
+					if name != path || tc.name == "unsupported" {
+						return nil, os.ErrNotExist
+					}
+					if writes == 0 {
+						return []byte(tc.initial), nil
+					}
+					return []byte(tc.readback), nil
+				},
+				WriteFile: func(name string, _ []byte, _ os.FileMode) error {
+					if name != path {
+						t.Fatalf("write path = %q, want %q", name, path)
+					}
+					writes++
+					return tc.writeErr
+				},
+				Mount:    func(string, string, string, uintptr, string) error { return nil },
+				MkdirAll: func(string, os.FileMode) error { return nil },
+			}
+
+			err := configureNFSDDelegatedTimestamps(logr.Discard())
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("configureNFSDDelegatedTimestamps() error = %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("configureNFSDDelegatedTimestamps() error = %v, want %q", err, tc.wantErr)
+			}
+			if writes != tc.wantWrites {
+				t.Fatalf("writes = %d, want %d", writes, tc.wantWrites)
+			}
+		})
+	}
+}
+
+func TestConfigureNFSDDelegatedTimestampsFailsClosedWhenDebugFSMountFails(t *testing.T) {
+	old := nfsdProcFS
+	t.Cleanup(func() { nfsdProcFS = old })
+	mountErr := errors.New("debugfs mount denied")
+	writes := 0
+	nfsdProcFS = nfsdProcFSOps{
+		ReadFile:  func(string) ([]byte, error) { return nil, os.ErrNotExist },
+		WriteFile: func(string, []byte, os.FileMode) error { writes++; return nil },
+		Mount:     func(string, string, string, uintptr, string) error { return mountErr },
+		MkdirAll:  func(string, os.FileMode) error { return nil },
+	}
+	if err := configureNFSDDelegatedTimestamps(logr.Discard()); err == nil || !errors.Is(err, mountErr) {
+		t.Fatalf("configureNFSDDelegatedTimestamps() error = %v, want debugfs mount error", err)
+	}
+	if writes != 0 {
+		t.Fatalf("writes = %d, want 0 after failed debugfs mount", writes)
 	}
 }
 
@@ -379,7 +456,7 @@ func TestStartNFSDLifecycleIgnoresOptionalControlPermissionErrors(t *testing.T) 
 			if _, err := startNFSDLifecycle(logr.New(sink)); err != nil {
 				t.Fatalf("startNFSDLifecycle() error = %v", err)
 			}
-			if len(sink.records) == 0 || !strings.Contains(sink.records[0], "controlnfsv4gracetime") || !strings.Contains(sink.records[0], "desired90") {
+			if len(sink.records) < 2 || !strings.Contains(sink.records[1], "controlnfsv4gracetime") || !strings.Contains(sink.records[1], "desired90") {
 				t.Fatalf("logs = %#v, want structured control and desired fields", sink.records)
 			}
 			if threadWrites != 1 {
@@ -423,6 +500,9 @@ func TestStartNFSDLifecycleFailsOnOptionalControlProbeError(t *testing.T) {
 			writes := 0
 			nfsdProcFS = nfsdProcFSOps{
 				ReadFile: func(path string) ([]byte, error) {
+					if path == delegatedTimestampsPath {
+						return nil, os.ErrNotExist
+					}
 					if strings.HasSuffix(path, "versions") {
 						return nil, os.ErrNotExist
 					}
@@ -468,6 +548,9 @@ func TestNFSDLifecycleFailurePaths(t *testing.T) {
 			reads := 0
 			nfsdProcFS = nfsdProcFSOps{
 				ReadFile: func(path string) ([]byte, error) {
+					if path == delegatedTimestampsPath {
+						return nil, os.ErrNotExist
+					}
 					if strings.HasSuffix(path, "versions") {
 						return nil, os.ErrNotExist
 					}

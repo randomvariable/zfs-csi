@@ -14,12 +14,14 @@ import (
 )
 
 const (
-	nfsdPath     = "/proc/fs/nfsd"
-	nfsdThreads  = 8
-	nfsdGrace    = 90
-	nfsdLease    = 90
-	nfsdPortlist = "tcp 2049"
-	nfsdVersions = "-2 -3 +4 +4.1 +4.2"
+	nfsdPath                = "/proc/fs/nfsd"
+	nfsdThreads             = 8
+	nfsdGrace               = 90
+	nfsdLease               = 90
+	nfsdPortlist            = "tcp 2049"
+	nfsdVersions            = "-2 -3 +4 +4.1 +4.2"
+	debugFSPath             = "/sys/kernel/debug"
+	delegatedTimestampsPath = "/sys/kernel/debug/nfsd/delegated_timestamps"
 )
 
 type nfsdProcFSOps struct {
@@ -53,6 +55,9 @@ func startNFSDLifecycle(log logr.Logger) (*nfsdLifecycle, error) {
 	}
 	if threads != 0 {
 		return nil, fmt.Errorf("nfsd already owns %d threads; refusing host-global collision", threads)
+	}
+	if err := configureNFSDDelegatedTimestamps(log); err != nil {
+		return nil, fmt.Errorf("configure nfsd delegated timestamps: %w", err)
 	}
 	if err := writeNFSD("versions", nfsdVersions); err != nil {
 		return nil, fmt.Errorf("configure nfsd versions: %w", err)
@@ -132,6 +137,58 @@ func readNFSDThreads() (int, error) {
 
 func writeNFSD(name, value string) error {
 	return nfsdProcFS.WriteFile(filepath.Join(nfsdPath, name), []byte(value+"\n"), 0)
+}
+
+// A missing control is treated as unsupported only after debugfs has been
+// mounted and probed again. This avoids confusing an unpropagated debugfs
+// mount with a kernel that lacks the control.
+func configureNFSDDelegatedTimestamps(log logr.Logger) error {
+	data, err := nfsdProcFS.ReadFile(delegatedTimestampsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := ensureDebugFSMounted(); err != nil {
+			return fmt.Errorf("ensure debugfs is mounted: %w", err)
+		}
+		data, err = nfsdProcFS.ReadFile(delegatedTimestampsPath)
+		if errors.Is(err, os.ErrNotExist) {
+			log.Info("nfsd delegated timestamps control unsupported after debugfs probe")
+			return nil
+		}
+	}
+	if err != nil {
+		return err
+	}
+	current := strings.TrimSpace(string(data))
+	if current != "Y" && current != "N" {
+		return fmt.Errorf("parse current value %q: want Y or N", current)
+	}
+	if current == "N" {
+		return nil
+	}
+	if err := nfsdProcFS.WriteFile(delegatedTimestampsPath, []byte("N\n"), 0); err != nil {
+		return fmt.Errorf("disable delegated timestamps: %w", err)
+	}
+	data, err = nfsdProcFS.ReadFile(delegatedTimestampsPath)
+	if err != nil {
+		return fmt.Errorf("read delegated timestamps after disable: %w", err)
+	}
+	readback := strings.TrimSpace(string(data))
+	if readback != "Y" && readback != "N" {
+		return fmt.Errorf("parse delegated timestamps readback %q: want Y or N", readback)
+	}
+	if readback != "N" {
+		return fmt.Errorf("delegated timestamps remains enabled after disable (readback %q)", readback)
+	}
+	return nil
+}
+
+func ensureDebugFSMounted() error {
+	if err := nfsdProcFS.MkdirAll(debugFSPath, 0o555); err != nil {
+		return err
+	}
+	if err := nfsdProcFS.Mount("debugfs", debugFSPath, "debugfs", 0, ""); err != nil && !errors.Is(err, syscall.EBUSY) {
+		return err
+	}
+	return nil
 }
 
 func configureNFSDOptional(log logr.Logger, name string, desired int) error {
