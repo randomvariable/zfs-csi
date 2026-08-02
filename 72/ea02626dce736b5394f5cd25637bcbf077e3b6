@@ -1,0 +1,26 @@
+internal/agent/volume_reconciler_test.go
+  s_5bd1e7644796c6::t_596645b3cb91d0 930-935
+  s_5bd1e7644796c6::t_197f21c03e0805 936,970-973
+  s_5bd1e7644796c6::t_bdae8319d9c21d 974-975
+internal/agent/volume_reconciler.go
+  s_5bd1e7644796c6::t_e63487144e6102 1992-1997
+internal/agent/volume_ensure_recovery_test.go
+  s_5bd1e7644796c6::t_e63487144e6102 160-174
+  s_5bd1e7644796c6::t_71a289a7f11583 152-153,184-185,245,250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "72ea02626dce736b5394f5cd25637bcbf077e3b6",
+  "prompts": {},
+  "sessions": {
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
