@@ -1,0 +1,45 @@
+api/v1alpha1/crd_contract_test.go
+  s_ace36be1b3d6e9::t_b5b1460a89806c 84-87
+internal/agent/volume_reconciler.go
+  s_ace36be1b3d6e9::t_29fda241c47d3b 398-400,444-449,455
+  s_defb2d6c8d418a::t_49d36f0fb9d1e0 453-454
+deploy/crd/zfs.csi.randomvariable.co.uk_volumes.yaml
+  s_defb2d6c8d418a::t_49d36f0fb9d1e0 142-143
+  s_ace36be1b3d6e9::t_e040e945425371 147-148
+internal/agent/volume_reconciler_test.go
+  s_defb2d6c8d418a::t_49d36f0fb9d1e0 81,86-90,243-283
+  s_ace36be1b3d6e9::t_b5b1460a89806c 78-80,82-85,91-93,177-242
+  s_defb2d6c8d418a::t_b61ac852ba2912 284
+api/v1alpha1/volume_types.go
+  s_ace36be1b3d6e9::t_b5b1460a89806c 224
+  s_defb2d6c8d418a::t_49d36f0fb9d1e0 220
+charts/zfs-csi/templates/crd/zfs.csi.randomvariable.co.uk_volumes.yaml
+  s_defb2d6c8d418a::t_49d36f0fb9d1e0 142-143
+  s_ace36be1b3d6e9::t_e040e945425371 147-148
+internal/agent/envtest_test.go
+  s_ace36be1b3d6e9::t_b5b1460a89806c 150-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "c856b98d1fe6f690bb2d914e0e6db5c8deb94966",
+  "prompts": {},
+  "sessions": {
+    "s_ace36be1b3d6e9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03d0be68affe4afHCS5oYjG80D",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    },
+    "s_defb2d6c8d418a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03cfb70cbffeSYnuV7wcKMDH0E",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
