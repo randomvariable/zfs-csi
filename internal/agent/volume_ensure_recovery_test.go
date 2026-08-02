@@ -149,11 +149,26 @@ func TestEnsure_FilesystemReSharesEveryPass(t *testing.T) {
 	reconcileVol(t, r, vol.Name)
 	reconcileVol(t, r, vol.Name)
 
-	if len(rz.shareCalls) != 2 {
-		t.Fatalf("Share called %d times over two ensure passes; want 2 (unconditional idempotent re-share)", len(rz.shareCalls))
+	if len(rz.shareImportedCalls) != 2 {
+		t.Fatalf("ShareImported called %d times over two ensure passes; want 2 (unconditional idempotent re-share)", len(rz.shareImportedCalls))
 	}
 	if got := getVol(t, d, vol.Name); got.Status.State != zfscsiv1.VolumeStateReady {
 		t.Fatalf("state = %q, want Ready (idempotent re-share must not flap)", got.Status.State)
+	}
+}
+
+func TestEnsure_FilesystemUsesMetadataPreservingShare(t *testing.T) {
+	d, rz, r := depsWithRecordingZFS(t)
+	vol := createReadyFilesystem(t, d, "fs-preserve-root")
+	rz.WithDataset(datasetPath(t, vol.Spec.VolumeID), zfs.KindFilesystem, true, zfs.KeyNone)
+
+	reconcileVol(t, r, vol.Name)
+
+	if len(rz.shareImportedCalls) != 1 {
+		t.Fatalf("ShareImported called %d times, want 1", len(rz.shareImportedCalls))
+	}
+	if len(rz.shareCalls) != 0 {
+		t.Fatalf("Share calls = %+v, want none (steady-state ensure must preserve root metadata)", rz.shareCalls)
 	}
 }
 
@@ -166,8 +181,8 @@ func TestEnsure_FilesystemUnshared_ReShares(t *testing.T) {
 
 	reconcileVol(t, r, vol.Name)
 
-	if len(rz.shareCalls) != 1 {
-		t.Fatalf("Share called %d times on an unshared dataset; want 1", len(rz.shareCalls))
+	if len(rz.shareImportedCalls) != 1 {
+		t.Fatalf("ShareImported called %d times on an unshared dataset; want 1", len(rz.shareImportedCalls))
 	}
 }
 
@@ -227,12 +242,12 @@ func TestEnsure_FilesystemCorrectNFSStatusIsNoOp(t *testing.T) {
 	}
 	before = getVol(t, d, vol.Name)
 	resourceVersion := before.ResourceVersion
-	sharesBefore := len(rz.shareCalls)
+	sharesBefore := len(rz.shareImportedCalls)
 
 	reconcileVol(t, r, vol.Name)
 
 	after := getVol(t, d, vol.Name)
-	if got := len(rz.shareCalls); got != sharesBefore+1 {
+	if got := len(rz.shareImportedCalls); got != sharesBefore+1 {
 		t.Fatalf("Share calls = %d, want %d; ensure path was not reached", got, sharesBefore+1)
 	}
 	if after.ResourceVersion != resourceVersion {

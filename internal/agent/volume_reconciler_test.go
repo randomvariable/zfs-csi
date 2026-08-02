@@ -927,12 +927,13 @@ func (nopStager) Shred(string) error { return nil }
 
 type recordingZFS struct {
 	*zfsfake.Backend
-	expandCalls    []int64
-	createCalls    []string
-	createShareNFS []string
-	createOptions  []zfs.CreateOptions
-	cloneCalls     []cloneCall
-	shareCalls     []shareCall
+	expandCalls        []int64
+	createCalls        []string
+	createShareNFS     []string
+	createOptions      []zfs.CreateOptions
+	cloneCalls         []cloneCall
+	shareCalls         []shareCall
+	shareImportedCalls []shareCall
 }
 
 type cloneCall struct {
@@ -964,6 +965,12 @@ func (r *recordingZFS) Share(ctx context.Context, name, shareNFS string) error {
 	r.shareCalls = append(r.shareCalls, shareCall{name: name, shareNFS: shareNFS})
 
 	return r.Backend.Share(ctx, name, shareNFS)
+}
+
+func (r *recordingZFS) ShareImported(ctx context.Context, name, shareNFS string) error {
+	r.shareImportedCalls = append(r.shareImportedCalls, shareCall{name: name, shareNFS: shareNFS})
+
+	return r.Backend.ShareImported(ctx, name, shareNFS)
 }
 
 func (r *recordingZFS) Expand(ctx context.Context, name string, capacity int64) error {

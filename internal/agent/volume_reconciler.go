@@ -1989,10 +1989,12 @@ func (r *VolumeReconciler) ensureFilesystemShared(
 	// zfs_is_shared has a version-divergent cgo signature we avoid binding).
 	shareOp := logging.LogWith(log, logging.OpZFSShare, logging.KeyDataset, dataset).
 		Metric(metrics.ZFSOperationsTotal, "share")
-	share := r.ZFS.Share
-	if vol.Spec.Provenance == zfscsiv1.VolumeProvenanceImported {
-		share = r.ZFS.ShareImported
-	}
+	// Reconcile must not rewrite the dataset root mode. Share's create/clone
+	// path opens a fresh root to 0777 for root-squashed consumers, but calling
+	// it every ensure pass would destroy application-owned mode/ACL metadata.
+	// ShareImported performs the same idempotent mount/export repair without
+	// chmod and is therefore the right steady-state operation for every origin.
+	share := r.ZFS.ShareImported
 	if err := share(ctx, dataset, "off"); err != nil {
 		shareOp.Failed(err)
 		if healthErr := r.recordBackendHealthWarning(ctx, vol, "repair filesystem export: "+err.Error()); healthErr != nil {
