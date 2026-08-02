@@ -283,6 +283,15 @@ storageClasses:
     nfsExportCIDRs: ["127.0.0.1/32"]
     rootSquash: true
     reclaimPolicy: Delete
+  # Temporary migration class. Enable only on trusted internal clusters and
+  # disable after metadata-preserving copies finish.
+  migrationNFSTLS:
+    enabled: false
+    name: zfs-csi-nfs-tls-migration
+    pool: tank
+    reclaimPolicy: Retain
+    nfsExportCIDRs: []
+    rootSquash: false
   tankNVMeTLS:
     enabled: true
     name: zfs-tank-nvme-tls

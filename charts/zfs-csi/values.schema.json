@@ -231,6 +231,9 @@
         "tankNFSTLS": {
           "$ref": "#/definitions/nfsStorageClass"
         },
+        "migrationNFSTLS": {
+          "$ref": "#/definitions/nfsStorageClass"
+        },
         "tankNVMeTLS": {
           "$ref": "#/definitions/nvmeStorageClass"
         },

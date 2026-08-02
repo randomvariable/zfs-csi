@@ -14,9 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-{{- $storageClasses := dict "tankNVMe" .Values.storageClasses.tankNVMe "tankNFS" .Values.storageClasses.tankNFS "tankNFSTLS" .Values.storageClasses.tankNFSTLS "tankNVMeTLS" .Values.storageClasses.tankNVMeTLS "flashNVMe" .Values.storageClasses.flashNVMe "flashNFS" .Values.storageClasses.flashNFS -}}
+{{- $storageClasses := dict "tankNVMe" .Values.storageClasses.tankNVMe "tankNFS" .Values.storageClasses.tankNFS "tankNFSTLS" .Values.storageClasses.tankNFSTLS "tankNVMeTLS" .Values.storageClasses.tankNVMeTLS "flashNVMe" .Values.storageClasses.flashNVMe "flashNFS" .Values.storageClasses.flashNFS "migrationNFSTLS" .Values.storageClasses.migrationNFSTLS -}}
 {{- if and .Values.controller.enabled .Values.node.enabled .Values.storage.enabled .Values.storageClasses.tankNFSTLS.enabled (not .Values.network.tls.enabled) -}}
 {{- fail "storageClasses.tankNFSTLS.enabled requires network.tls.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.controller.enabled .Values.node.enabled .Values.storage.enabled .Values.storageClasses.migrationNFSTLS.enabled (not .Values.network.tls.enabled) -}}
+{{- fail "storageClasses.migrationNFSTLS.enabled requires network.tls.enabled=true" -}}
 {{- end -}}
 {{- if and .Values.controller.enabled .Values.node.enabled .Values.storage.enabled .Values.storageClasses.tankNVMeTLS.enabled (not .Values.network.tls.enabled) -}}
 {{- fail "storageClasses.tankNVMeTLS.enabled requires network.tls.enabled=true" -}}
@@ -152,6 +155,25 @@ parameters:
   nfsTLS: "true"
   encrypted: "true"
 reclaimPolicy: {{ .Values.storageClasses.tankNFSTLS.reclaimPolicy }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+{{- end }}
+{{- if and .Values.storageClasses.migrationNFSTLS.enabled .Values.network.tls.enabled .Values.encryption.enabled .Values.controller.enabled .Values.node.enabled .Values.storage.enabled }}
+{{- $nfsExportCIDRs := required "storageClasses.migrationNFSTLS.nfsExportCIDRs is required when migrationNFSTLS is enabled" .Values.storageClasses.migrationNFSTLS.nfsExportCIDRs }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.migrationNFSTLS.name }}
+provisioner: zfs.csi.randomvariable.co.uk
+parameters:
+  pool: {{ .Values.storageClasses.migrationNFSTLS.pool }}
+  type: filesystem
+  nfsExportCIDRs: {{ join "," $nfsExportCIDRs | quote }}
+  nfsRootSquash: {{ .Values.storageClasses.migrationNFSTLS.rootSquash | quote }}
+  nfsTLS: "true"
+  encrypted: "true"
+reclaimPolicy: {{ .Values.storageClasses.migrationNFSTLS.reclaimPolicy }}
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
 ---
