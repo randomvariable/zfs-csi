@@ -188,13 +188,21 @@ spec:
               command: ["test", "-S", "/stage/nfs.sock"]
             initialDelaySeconds: 1
             periodSeconds: 5
-{{- if and .Values.network.tls.enabled (not $multiOwner) }}
+{{- if .Values.network.tls.enabled }}
         - name: tlshd
           image: {{ include "zfs-csi.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/bin/sh", "-ceu"]
           args:
             - |-
+{{- if $multiOwner }}
+              # Storage workload owns the host-global handshake queue on owner
+              # nodes. Keep this sidecar alive there without starting a second
+              # tlshd; ordinary nodes still run the client daemon below.
+              if grep -Fqf /etc/podinfo/storage-owner-labels /etc/podinfo/labels; then
+                exec sleep infinity
+              fi
+{{- end }}
               # Kubelet projects PodCertificate files at mode 0400, but tlshd
               # enforces 0600 (key) and 0644 (cert/CA). Mirror them into a
               # writable emptyDir with the modes tlshd demands; the loop
@@ -233,6 +241,15 @@ spec:
               readOnly: true
             - name: tls-client-live
               mountPath: /run/zfs-csi-tls-live
+{{- if $multiOwner }}
+            - name: node-labels
+              mountPath: /etc/podinfo
+              readOnly: true
+            - name: storage-owner-labels
+              mountPath: /etc/podinfo/storage-owner-labels
+              subPath: storage-owner-labels
+              readOnly: true
+{{- end }}
 {{- end }}
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
@@ -262,7 +279,7 @@ spec:
         - name: sys
           hostPath:
             path: /sys
-{{- if and .Values.network.tls.enabled (not $multiOwner) }}
+{{- if .Values.network.tls.enabled }}
         - name: run-zfs
           hostPath:
             path: /run/zfs-csi
@@ -291,6 +308,17 @@ spec:
         - name: tlshd-config
           configMap:
             name: zfs-csi-tlshd-node-config
+{{- if $multiOwner }}
+        - name: node-labels
+          downwardAPI:
+            items:
+              - path: labels
+                fieldRef:
+                  fieldPath: metadata.labels
+        - name: storage-owner-labels
+          configMap:
+            name: zfs-csi-storage-owner-labels
+{{- end }}
 {{- end }}
         # Shared emptyDir for the node-local StagePlugin unix sockets. Co-located
         # in the same pod so the driver can dial the sidecars with zero network hop.

@@ -106,10 +106,25 @@ func TestMultiOwnerTLSHasOneDaemonPerStorageHost(t *testing.T) {
 	}
 	objects := renderedObjects(t, renderChart(t, args...))
 	for _, daemonSet := range objectsByKind(objects, "DaemonSet") {
-		if strings.Contains(marshalObject(t, daemonSet), "app.kubernetes.io/component: node") && strings.Contains(marshalObject(t, daemonSet), "name: tlshd") {
-			t.Fatal("multi-owner node DaemonSet must not race storage-owner tlshd")
+		text := marshalObject(t, daemonSet)
+		if !strings.Contains(text, "app.kubernetes.io/component: node") {
+			continue
+		}
+		for _, want := range []string{"name: tlshd", "name: node-labels", "name: storage-owner-labels", `/etc/podinfo/labels`, "grep -Fqf /etc/podinfo/storage-owner-labels", "exec sleep infinity"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("multi-owner node tlshd gate missing %q", want)
+			}
 		}
 	}
+	for _, configMap := range objectsByKind(objects, "ConfigMap") {
+		text := marshalObject(t, configMap)
+		if strings.Contains(text, "name: zfs-csi-storage-owner-labels") && strings.Contains(text, `zfs.csi.randomvariable.co.uk/storage="storage-a"`) {
+			goto storageDeployment
+		}
+	}
+	t.Fatal("multi-owner render missing storage-owner label ConfigMap")
+
+storageDeployment:
 	for _, deployment := range objectsByKind(objects, "Deployment") {
 		text := marshalObject(t, deployment)
 		if !strings.Contains(text, "app.kubernetes.io/component: storage") {

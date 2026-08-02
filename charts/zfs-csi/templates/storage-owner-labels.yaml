@@ -1,0 +1,16 @@
+{{- if and .Values.node.enabled (gt (len .Values.storageOwners) 0) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zfs-csi-storage-owner-labels
+  namespace: {{ include "zfs-csi.namespace" . }}
+data:
+  storage-owner-labels: |
+{{- range .Values.storageOwners }}
+{{- if .enabled }}
+{{- range $key, $value := .nodeSelector }}
+    {{ $key }}="{{ $value }}"
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
