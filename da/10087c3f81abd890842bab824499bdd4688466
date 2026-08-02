@@ -1,0 +1,39 @@
+cmd/zfs-csi/main_test.go
+  s_866a225e5e1035::t_5cf2e6876146dd 252
+  s_96d6fd08c88caf::t_8312423b77ad87 213-221,224,228-251,254-269
+  s_96d6fd08c88caf::t_999af89af62129 551-553
+  s_96d6fd08c88caf::t_bd8d19ddf14275 503-505
+  s_866a225e5e1035::t_4052572c098ef6 202,222-223,225-227,253
+  s_866a225e5e1035::t_8b6a8ade4ba844 270-275,277,280-288
+  s_866a225e5e1035::t_06d1a9fdcab6ca 276,278-279
+  s_96d6fd08c88caf::t_0218d0253e8df6 459
+cmd/zfs-csi/nfsd.go
+  s_96d6fd08c88caf::t_684ffb32860f4b 17-22
+  s_96d6fd08c88caf::t_664e53d21b1d08 24,59-61,145-147,156-159,163,165-166,168-173,177,190-191
+  s_866a225e5e1035::t_4052572c098ef6 23,142-144,148-155,160-162,164,167,174-176,178-189,192
+  s_866a225e5e1035::t_17dfa2bc837a17 193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "da10087c3f81abd890842bab824499bdd4688466",
+  "prompts": {},
+  "sessions": {
+    "s_866a225e5e1035": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03bf26b4bffe8b6nrYmq1oArx3",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    },
+    "s_96d6fd08c88caf": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03bfb6be8ffex4EPFa0lQPgclE",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
