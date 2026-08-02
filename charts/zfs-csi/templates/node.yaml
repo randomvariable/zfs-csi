@@ -198,7 +198,7 @@ spec:
               command: ["test", "-S", "/stage/nfs.sock"]
             initialDelaySeconds: 1
             periodSeconds: 5
-{{- if and .Values.network.tls.enabled (not $hasTLSDedicatedOwners) }}
+{{- if .Values.network.tls.enabled }}
         - name: tlshd
           image: {{ include "zfs-csi.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -272,7 +272,7 @@ spec:
         - name: sys
           hostPath:
             path: /sys
-{{- if and .Values.network.tls.enabled (not $hasTLSDedicatedOwners) }}
+{{- if .Values.network.tls.enabled }}
         - name: run-zfs
           hostPath:
             path: /run/zfs-csi
