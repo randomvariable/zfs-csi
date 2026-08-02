@@ -1,0 +1,26 @@
+charts/zfs-csi/templates/node.yaml
+  s_5bd1e7644796c6::t_8ebd1c8c139d5a 191,265
+charts/zfs-csi/templates/storage-agent.yaml
+  s_5bd1e7644796c6::t_8ebd1c8c139d5a 206-218,243-247,296-308
+charts/zfs-csi/templates/tlshd-config.yaml
+  s_5bd1e7644796c6::t_8ebd1c8c139d5a 45-46
+charts/zfs-csi/tls_test.go
+  s_5bd1e7644796c6::t_83bf96daf213f5 100-104,106-127
+  s_5bd1e7644796c6::t_12e98265fb1510 105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "b6fa8e0973f4da0e211779a071ab233cfe80d139",
+  "prompts": {},
+  "sessions": {
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
