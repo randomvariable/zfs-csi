@@ -1,0 +1,27 @@
+charts/zfs-csi/templates/storage-owner-labels.yaml
+  s_5bd1e7644796c6::t_107a61d0edbfba 1-16
+charts/zfs-csi/tls_test.go
+  s_5bd1e7644796c6::t_aa0a2d6408b5bc 121
+  s_5bd1e7644796c6::t_afe5b7bceb74ba 109-112,114-116
+  s_5bd1e7644796c6::t_4b355c4074d070 113,119-120,122-127
+charts/zfs-csi/templates/node.yaml
+  s_5bd1e7644796c6::t_92944a32385ce9 205
+  s_5bd1e7644796c6::t_afe5b7bceb74ba 191,198-201,203-204,244-247,252,282,311-317,321
+  s_5bd1e7644796c6::t_107a61d0edbfba 202,248-251,318-320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "58584e852a13a5cbe85f20f1ab574005af1df846",
+  "prompts": {},
+  "sessions": {
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
