@@ -1,0 +1,76 @@
+charts/zfs-csi/templates/crd/zfs.csi.randomvariable.co.uk_volumes.yaml
+  s_5bd1e7644796c6::t_4bc1837d904c3f 123-124,138-147
+internal/driver/controller_test.go
+  s_5bd1e7644796c6::t_9b57e933965d89 791,800
+  s_5bd1e7644796c6::t_4205f307ab1673 2683-2701
+  s_5bd1e7644796c6::t_0cf726098a50d7 798-799,801-805
+deploy/crd/zfs.csi.randomvariable.co.uk_volumes.yaml
+  s_5bd1e7644796c6::t_4bc1837d904c3f 123-124,138-147
+api/v1alpha1/volume_types.go
+  s_5bd1e7644796c6::t_320277c5adaf9f 219-225
+  s_3e57dfea8036b7::t_fbb5b7d89683ed 226
+internal/driver/scparams.go
+  s_5bd1e7644796c6::t_320277c5adaf9f 39-40,58,108-113,115-116,249-250
+  s_5bd1e7644796c6::t_5936652af782d4 114,248
+charts/zfs-csi/templates/tlshd-config.yaml
+  s_5bd1e7644796c6::t_a4b78da73cf88f 40-47
+internal/nfsexport/table.go
+  s_5bd1e7644796c6::t_320277c5adaf9f 57,59-60
+  s_5bd1e7644796c6::t_7d138d3ed6134d 30-33,35
+  s_5bd1e7644796c6::t_5936652af782d4 34,58
+internal/driver/capabilities.go
+  s_5bd1e7644796c6::t_7d138d3ed6134d 111-120,122-125
+  s_5bd1e7644796c6::t_5936652af782d4 121
+charts/zfs-csi/values.yaml
+  s_5bd1e7644796c6::t_a75e0652f357da 261,284,307
+charts/zfs-csi/templates/storage-agent.yaml
+  s_5bd1e7644796c6::t_a4b78da73cf88f 206-216,233-237,289-301
+internal/driver/controller.go
+  s_5bd1e7644796c6::t_320277c5adaf9f 242,310-311,614,731
+  s_5bd1e7644796c6::t_a0fe91e8cfd9de 248-251,309,312
+charts/zfs-csi/templates/storageclasses.yaml
+  s_5bd1e7644796c6::t_a4b78da73cf88f 95,113,132,151,265,284
+api/v1alpha1/zz_generated.deepcopy.go
+  s_5bd1e7644796c6::t_fc581d764962ad 466-470
+charts/zfs-csi/templates/node.yaml
+  s_5bd1e7644796c6::t_a4b78da73cf88f 75-82
+  s_5bd1e7644796c6::t_3e4a59795be896 19,74,201,275
+internal/nfsexport/responder_test.go
+  s_5bd1e7644796c6::t_483c297b62b5eb 62-77
+internal/podcertificatesigner/signer.go
+  s_5bd1e7644796c6::t_c1f7373d4ba96d 249-250
+charts/zfs-csi/tls_test.go
+  s_5bd1e7644796c6::t_9b57e933965d89 164,272
+internal/podcertificatesigner/signer_test.go
+  s_5bd1e7644796c6::t_838b37f61b47c0 243
+  s_5bd1e7644796c6::t_483c297b62b5eb 242,244-250
+internal/agent/volume_reconciler.go
+  s_5bd1e7644796c6::t_7d138d3ed6134d 314-317,319
+  s_5bd1e7644796c6::t_5936652af782d4 318
+charts/zfs-csi/values.schema.json
+  s_5bd1e7644796c6::t_1bab4fc54412b3 402-404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "c223da22c6793af5024be0f495babacfcbb8ec98",
+  "prompts": {},
+  "sessions": {
+    "s_3e57dfea8036b7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0403de83cffetUtT4I711Ekbk7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    },
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
