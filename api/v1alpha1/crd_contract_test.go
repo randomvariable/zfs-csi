@@ -81,6 +81,10 @@ func TestStorageCRDsAreClusterScopedWithPluralCIDRs(t *testing.T) {
 			t.Fatalf("Volume spec.%s validations = %#v, want immutable CEL rule", name, field.XValidations)
 		}
 	}
+	nfsRootSquash := volumeSpec.Properties["nfsRootSquash"]
+	if len(nfsRootSquash.XValidations) != 1 || nfsRootSquash.XValidations[0].Rule != "self == oldSelf || (oldSelf == false && self == true)" {
+		t.Fatalf("Volume spec.nfsRootSquash validation = %#v, want one-way tightening rule", nfsRootSquash.XValidations)
+	}
 	// ZFS fixes a zvol's volblocksize at creation and a clone inherits it from its
 	// origin. Every capacity the driver aligns (create, expand, clone, restore) is
 	// computed against this value, so a mutated volBlockSize would make already

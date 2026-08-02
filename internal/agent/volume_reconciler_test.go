@@ -75,6 +75,22 @@ type fakeNFSCacheWriter struct {
 	rootInvalidateErr   error
 }
 
+type fakeNFSExportFlusher struct {
+	calls int
+	err   error
+	errs  []error
+}
+
+func (f *fakeNFSExportFlusher) Flush() error {
+	f.calls++
+	if len(f.errs) > 0 {
+		err := f.errs[0]
+		f.errs = f.errs[1:]
+		return err
+	}
+	return f.err
+}
+
 func (w *fakeNFSCacheWriter) InstallRootPositive(entry nfsexport.Entry) error {
 	if w.events != nil {
 		*w.events = append(*w.events, "install-root")
@@ -155,6 +171,114 @@ func TestNFSRegisterOnlyUpdatesAuthoritativeTable(t *testing.T) {
 	}
 	if _, ok := r.NFSExports.LookupExport("*", "/tank/b"); !ok {
 		t.Fatal("/tank/b missing from MemTable")
+	}
+}
+
+func TestNFSRootSquashTighteningUpdatesTableAndFlushes(t *testing.T) {
+	d := newTestDeps(t)
+	r := d.reconciler()
+	flusher := &fakeNFSExportFlusher{}
+	r.NFSFlusher = flusher
+	vol := nfsTestVolume("10.0.0.0/8")
+	falseValue := false
+	vol.Spec.NFSRootSquash = &falseValue
+
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/a"); err != nil {
+		t.Fatal(err)
+	}
+	trueValue := true
+	vol.Spec.NFSRootSquash = &trueValue
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/a"); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, ok := r.NFSExports.LookupRealExport("*", "/tank/csi/a")
+	if !ok || entry.NoRootSquash {
+		t.Fatalf("entry = %#v, want root-squashed authoritative entry", entry)
+	}
+	if flusher.calls != 1 {
+		t.Fatalf("flush calls = %d, want 1", flusher.calls)
+	}
+}
+
+func TestNFSRootSquashUnchangedDoesNotFlush(t *testing.T) {
+	d := newTestDeps(t)
+	r := d.reconciler()
+	flusher := &fakeNFSExportFlusher{}
+	r.NFSFlusher = flusher
+	vol := nfsTestVolume("10.0.0.0/8")
+	trueValue := true
+	vol.Spec.NFSRootSquash = &trueValue
+
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/a"); err != nil {
+		t.Fatal(err)
+	}
+	if flusher.calls != 0 {
+		t.Fatalf("flush calls = %d, want 0", flusher.calls)
+	}
+}
+
+func TestNFSRootSquashFlushFailurePropagates(t *testing.T) {
+	d := newTestDeps(t)
+	r := d.reconciler()
+	flusher := &fakeNFSExportFlusher{err: errors.New("flush failed")}
+	r.NFSFlusher = flusher
+	vol := nfsTestVolume("10.0.0.0/8")
+	falseValue := false
+	vol.Spec.NFSRootSquash = &falseValue
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/a"); err != nil {
+		t.Fatal(err)
+	}
+	trueValue := true
+	vol.Spec.NFSRootSquash = &trueValue
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/a"); !errors.Is(err, flusher.err) {
+		t.Fatalf("tightening error = %v, want flush failure", err)
+	}
+	entry, ok := r.NFSExports.LookupRealExport("*", "/tank/csi/a")
+	if !ok || entry.NoRootSquash {
+		t.Fatalf("entry = %#v, want fail-closed root-squashed entry", entry)
+	}
+}
+
+func TestNFSRootSquashPathDriftRetriesFlushAfterFailure(t *testing.T) {
+	d := newTestDeps(t)
+	r := d.reconciler()
+	flushErr := errors.New("flush failed")
+	r.NFSFlusher = &fakeNFSExportFlusher{errs: []error{flushErr, nil}}
+	vol := nfsTestVolume("10.0.0.0/8")
+	falseValue := false
+	vol.Spec.NFSRootSquash = &falseValue
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/old"); err != nil {
+		t.Fatal(err)
+	}
+
+	trueValue := true
+	vol.Spec.NFSRootSquash = &trueValue
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/new"); !errors.Is(err, flushErr) {
+		t.Fatalf("tightening error = %v, want flush failure", err)
+	}
+	if got := r.nfsPaths["tank/csi/a"]; got != "/tank/csi/old" {
+		t.Fatalf("path bookkeeping after failed flush = %q, want old path", got)
+	}
+	if entry := r.nfsEntries["/tank/csi/old"]; !entry.NoRootSquash {
+		t.Fatalf("old entry bookkeeping after failed flush = %#v, want loose entry", entry)
+	}
+
+	if err := r.registerNFSExport(vol, "tank/csi/a", "/tank/csi/new"); err != nil {
+		t.Fatal(err)
+	}
+	flusher := r.NFSFlusher.(*fakeNFSExportFlusher)
+	if flusher.calls != 2 {
+		t.Fatalf("flush calls = %d, want 2", flusher.calls)
+	}
+	if got := r.nfsPaths["tank/csi/a"]; got != "/tank/csi/new" {
+		t.Fatalf("path bookkeeping after successful retry = %q, want new path", got)
+	}
+	if _, ok := r.nfsEntries["/tank/csi/old"]; ok {
+		t.Fatal("old entry bookkeeping remained after successful retry")
 	}
 }
 

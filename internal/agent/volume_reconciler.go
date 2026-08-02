@@ -395,6 +395,9 @@ func (r *VolumeReconciler) registerNFSExportCtx(ctx context.Context, vol *zfscsi
 	}
 	previousPath := r.nfsPaths[dataset]
 	previousEntry, previousEntryExisted := r.nfsEntries[previousPath]
+	if !previousEntryExisted && previousPath == "" {
+		previousEntry, previousEntryExisted = r.NFSExports.LookupRealExport("*", entry.Path)
+	}
 	previousChildren := len(r.nfsEntries)
 	_, rootExisted := r.NFSExports.Root()
 	createdRoot := !rootExisted
@@ -424,7 +427,6 @@ func (r *VolumeReconciler) registerNFSExportCtx(ctx context.Context, vol *zfscsi
 	}
 	if previousPath != "" && previousPath != entry.Path {
 		_ = r.NFSExports.Remove(previousPath)
-		delete(r.nfsEntries, previousPath)
 	}
 	if err := r.NFSExports.UpsertBelowRoot(entry); err != nil {
 		if previousPath != "" && previousPath != entry.Path && previousEntryExisted {
@@ -439,8 +441,17 @@ func (r *VolumeReconciler) registerNFSExportCtx(ctx context.Context, vol *zfscsi
 		}
 		return fmt.Errorf("register NFS export entry: %w", err)
 	}
+	tightening := previousEntryExisted && previousEntry.NoRootSquash && !entry.NoRootSquash
+	if tightening && r.NFSFlusher != nil {
+		if err := r.NFSFlusher.Flush(); err != nil {
+			return fmt.Errorf("flush nfsd export cache after root squash tightening: %w", err)
+		}
+	}
 	if r.nfsEntries == nil {
 		r.nfsEntries = make(map[string]nfsexport.Entry)
+	}
+	if previousPath != "" && previousPath != entry.Path {
+		delete(r.nfsEntries, previousPath)
 	}
 	delete(r.nfsWithdrawn, dataset)
 	r.nfsEntries[entry.Path] = entry

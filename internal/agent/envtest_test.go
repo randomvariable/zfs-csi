@@ -147,6 +147,46 @@ func TestEnvtestVolumeRequiresOwnerNode(t *testing.T) {
 	}
 }
 
+func TestEnvtestVolumeNFSRootSquashOnlyTightens(t *testing.T) {
+	ctx := context.Background()
+	h := testenv.Start(t)
+	defer h.Stop(t)
+	testenv.CRDsInstalled(ctx, t, h)
+
+	newVolume := func(name string, value *bool) *zfscsiv1.Volume {
+		return &zfscsiv1.Volume{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: testenv.VolumeSpec(zfscsiv1.VolumeSpec{
+			Pool: "tank", VolName: name, Type: zfscsiv1.VolumeTypeFilesystem, Capacity: 1 << 20,
+			VolumeID: "csi:tank:filesystem:" + name, OwnerNode: testenv.DefaultOwnerNode,
+			NFSExportCIDRs: []string{"10.0.0.0/8"}, NFSRootSquash: value,
+		})}
+	}
+	falseValue := false
+	trueValue := true
+
+	loose := newVolume("nfs-root-squash-loose", &falseValue)
+	if err := h.Client.Create(ctx, loose); err != nil {
+		t.Fatal(err)
+	}
+	loose.Spec.NFSRootSquash = &trueValue
+	if err := h.Client.Update(ctx, loose); err != nil {
+		t.Fatalf("false to true update: %v", err)
+	}
+
+	reject := func(name string, oldValue, newValue *bool) {
+		t.Helper()
+		vol := newVolume(name, oldValue)
+		if err := h.Client.Create(ctx, vol); err != nil {
+			t.Fatal(err)
+		}
+		vol.Spec.NFSRootSquash = newValue
+		if err := h.Client.Update(ctx, vol); err == nil {
+			t.Fatalf("%s: loosening update succeeded", name)
+		}
+	}
+	reject("nfs-root-squash-tight", &trueValue, &falseValue)
+	reject("nfs-root-squash-default", nil, &falseValue)
+}
+
 func TestEnvtestSnapshotOwnerNodeIsImmutable(t *testing.T) {
 	ctx := t.Context()
 	h := testenv.Start(t)

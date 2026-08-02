@@ -139,12 +139,13 @@ spec:
                 default: true
                 description: |-
                   nfsRootSquash maps uid 0 from NFS clients to the anonymous user. It
-                  defaults to true and is immutable after creation. Disable only for a
+                  defaults to true and may only be tightened from false to true after
+                  creation. Disable only for a
                   trusted migration target that must preserve arbitrary POSIX metadata.
                 type: boolean
                 x-kubernetes-validations:
-                - message: nfsRootSquash is immutable
-                  rule: self == oldSelf
+                 - message: nfsRootSquash may only transition from false to true
+                   rule: self == oldSelf || (oldSelf == false && self == true)
               nfsTLSEnabled:
                 default: false
                 description: |-

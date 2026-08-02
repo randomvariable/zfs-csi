@@ -217,11 +217,11 @@ type VolumeSpec struct {
 	NFSExportAccessMode string `json:"nfsExportAccessMode,omitempty"`
 
 	// nfsRootSquash maps uid 0 from NFS clients to the anonymous user. It
-	// defaults to true and is immutable after creation. Disable only for a
+	// defaults to true and may only be tightened from false to true after creation. Disable only for a
 	// trusted migration target that must preserve arbitrary POSIX metadata.
 	// +optional
 	// +default=true
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="nfsRootSquash is immutable"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf || (oldSelf == false && self == true)",message="nfsRootSquash may only transition from false to true"
 	NFSRootSquash *bool `json:"nfsRootSquash,omitempty"`
 
 	// nfsTLSEnabled requests RPC-with-TLS for filesystem NFS consumers. It is
