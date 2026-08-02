@@ -399,6 +399,9 @@
             "minLength": 1
           }
         },
+        "rootSquash": {
+          "type": "boolean"
+        },
         "reclaimPolicy": {
           "type": "string",
           "enum": [

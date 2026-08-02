@@ -161,7 +161,7 @@ func assertTLSRuntimeContract(t *testing.T, objects []map[string]any, component,
 		if !strings.Contains(text, "app.kubernetes.io/component: "+component) {
 			continue
 		}
-		for _, want := range []string{"hostUsers: true", "name: tlshd", "/usr/sbin/tlshd -s -c /etc/tlshd/config", "exec sleep infinity", "name: tlshd-config", extra} {
+		for _, want := range []string{"hostUsers: true", "name: tlshd", "/usr/sbin/tlshd -s -c /etc/tlshd/config", "name: tlshd-config", extra} {
 			if want == "" {
 				continue
 			}
@@ -269,7 +269,7 @@ func TestTLSRuntimeConfigsUseSeparateClientAndServerCredentials(t *testing.T) {
 	if !strings.Contains(nodeConfig, "[authenticate.client]") || strings.Contains(nodeConfig, "[authenticate.server]") || strings.Contains(nodeConfig, "/etc/zfs-csi/tls") {
 		t.Fatalf("node tlshd config has wrong credential role:\n%s", nodeConfig)
 	}
-	if !strings.Contains(storageConfig, "[authenticate.server]") || strings.Contains(storageConfig, "[authenticate.client]") || !strings.Contains(storageConfig, "/run/zfs-csi-tls-ca/ca.crt") || !strings.Contains(storageConfig, "/run/zfs-csi-tls/tls.crt") {
+	if !strings.Contains(storageConfig, "[authenticate.server]") || !strings.Contains(storageConfig, "[authenticate.client]") || !strings.Contains(storageConfig, "/run/zfs-csi-tls-ca/ca.crt") || !strings.Contains(storageConfig, "/run/zfs-csi-tls/tls.crt") || !strings.Contains(storageConfig, "/run/zfs-csi-tls-client/tls.crt") {
 		t.Fatalf("storage tlshd config has wrong credential role:\n%s", storageConfig)
 	}
 }

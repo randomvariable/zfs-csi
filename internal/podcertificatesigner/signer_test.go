@@ -239,6 +239,15 @@ func TestValidateRequestRejectsUnauthorizedRequester(t *testing.T) {
 	}
 }
 
+func TestValidateRequestAllowsStorageAgent(t *testing.T) {
+	pcr, _ := validRequest(t)
+	pcr.Spec.ServiceAccountName = "zfs-csi-storage"
+	r := &Reconciler{DriverNamespace: "zfs-csi-system"}
+	if _, denial := r.validateRequest(pcr); denial != nil {
+		t.Fatalf("validateRequest denial = %#v", denial)
+	}
+}
+
 func TestReconcileDeniesBeforeReadingPrivateCA(t *testing.T) {
 	pcr, _ := validRequest(t)
 	pcr.Spec.UnverifiedUserAnnotations = map[string]string{"example.test/unsafe": "true"}

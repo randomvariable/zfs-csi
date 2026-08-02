@@ -258,6 +258,7 @@ storageClasses:
     name: zfs-tank-nfs
     pool: tank
     nfsExportCIDRs: []
+    rootSquash: true
     reclaimPolicy: Delete
   # Optionally mark exactly ONE chart-generated StorageClass as the cluster's
   # default StorageClass. Empty (the default) preserves the historical
@@ -280,6 +281,7 @@ storageClasses:
     name: zfs-tank-nfs-tls
     pool: tank
     nfsExportCIDRs: ["127.0.0.1/32"]
+    rootSquash: true
     reclaimPolicy: Delete
   tankNVMeTLS:
     enabled: true
@@ -302,6 +304,7 @@ storageClasses:
     name: zfs-flash-nfs
     pool: flash
     nfsExportCIDRs: []
+    rootSquash: true
     reclaimPolicy: Delete
 
 # OpenBao Transit-backed ZFS native encryption. When enabled, the controller +

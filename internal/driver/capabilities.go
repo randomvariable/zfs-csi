@@ -108,17 +108,19 @@ func nodeCapabilities() []*csi.NodeServiceCapability {
 
 // scParams extracts zfs-csi parameters from a CSI map (StorageClass parameters).
 type scParams struct {
-	Pool                string
-	Type                string // block|filesystem
-	FsType              string
-	BlockSize           string
-	Compression         string
-	Transport           string
-	Encrypted           bool
-	NFSExportCIDRs      []string
-	NFSExportAccessMode string
-	NFSTLSEnabled       bool
-	NFSTLSSpecified     bool
-	NVMeTLSEnabled      bool
-	NVMeTLSSpecified    bool
+	Pool                   string
+	Type                   string // block|filesystem
+	FsType                 string
+	BlockSize              string
+	Compression            string
+	Transport              string
+	Encrypted              bool
+	NFSExportCIDRs         []string
+	NFSExportAccessMode    string
+	NFSRootSquash          bool
+	NFSRootSquashSpecified bool
+	NFSTLSEnabled          bool
+	NFSTLSSpecified        bool
+	NVMeTLSEnabled         bool
+	NVMeTLSSpecified       bool
 }

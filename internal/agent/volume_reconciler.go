@@ -311,11 +311,12 @@ func (r *VolumeReconciler) nfsExportEntry(vol *zfscsiv1.Volume, dataset, exportP
 		return nfsexport.Entry{}, &nfsExportTransientError{err: fmt.Errorf("export path %s is on filesystem type %#x, not ZFS", exportPath, identityInfo.Type)}
 	}
 	return nfsexport.Entry{
-		Path:       exportPath,
-		UUID:       nfsexport.UUIDFromStatFS(identityInfo.Low, identityInfo.High),
-		CIDRs:      cidrs,
-		AccessMode: mode,
-		TLS:        vol.Spec.NFSTLSEnabled,
+		Path:         exportPath,
+		UUID:         nfsexport.UUIDFromStatFS(identityInfo.Low, identityInfo.High),
+		CIDRs:        cidrs,
+		AccessMode:   mode,
+		NoRootSquash: vol.Spec.NFSRootSquash != nil && !*vol.Spec.NFSRootSquash,
+		TLS:          vol.Spec.NFSTLSEnabled,
 	}, nil
 }
 

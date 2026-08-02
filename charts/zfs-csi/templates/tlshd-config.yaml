@@ -37,6 +37,14 @@ data:
 
     [authenticate]
 
+    [authenticate.client]
+    # One tlshd owns each host kernel handshake queue. Storage-owner nodes may
+    # also consume NFS exports, so their daemon carries both client and server
+    # credentials rather than racing a second node-plugin daemon.
+    x509.truststore= /run/zfs-csi-tls-client/ca.crt
+    x509.certificate= /run/zfs-csi-tls-client/tls.crt
+    x509.private_key= /run/zfs-csi-tls-client/tls.key
+
     [authenticate.server]
     # Storage tlshd trusts the shared CA and uses a per-owner ServerAuth leaf.
     # xprtsec=mtls exports reject clients without a verified client certificate.

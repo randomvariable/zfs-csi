@@ -27,11 +27,12 @@ type Entry struct {
 	Path string
 	// FSID is retained as a compatibility key for existing reconcilers. New
 	// callers must provide UUID; FSID is never used for non-root wire identity.
-	FSID       uint32
-	UUID       [16]byte
-	CIDRs      []netip.Prefix
-	AccessMode AccessMode
-	TLS        bool
+	FSID         uint32
+	UUID         [16]byte
+	CIDRs        []netip.Prefix
+	AccessMode   AccessMode
+	NoRootSquash bool
+	TLS          bool
 	// Root marks the explicit host filesystem used as the NFSv4 pseudo-root.
 	// Root identity must never be inferred from Path == "/".
 	Root bool
@@ -53,7 +54,10 @@ func (e Entry) exportFlags() int {
 	if e.Root {
 		return nfsexpV4Root | nfsexpFSID | nfsexpReadOnly | nfsexpRootSquash | nfsexpInsecurePort | nfsexpNoSubtreeChk
 	}
-	flags := nfsexpRootSquash | nfsexpNoSubtreeChk
+	flags := nfsexpNoSubtreeChk
+	if !e.NoRootSquash {
+		flags |= nfsexpRootSquash
+	}
 	if e.AccessMode == AccessRO {
 		flags |= nfsexpReadOnly
 	}

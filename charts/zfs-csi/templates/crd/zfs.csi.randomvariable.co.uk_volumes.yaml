@@ -120,9 +120,8 @@ spec:
                   rule: self == oldSelf
               nfsExportAccessMode:
                 default: rw
-                description: |-
-                  nfsExportAccessMode controls whether the allowed NFS CIDRs are exported read-write or read-only.
-                  The reconciler always adds root_squash and never accepts raw sharenfs strings.
+                description: nfsExportAccessMode controls whether the allowed NFS
+                  CIDRs are exported read-write or read-only.
                 enum:
                 - rw
                 - ro
@@ -136,6 +135,16 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-list-type: set
+              nfsRootSquash:
+                default: true
+                description: |-
+                  nfsRootSquash maps uid 0 from NFS clients to the anonymous user. It
+                  defaults to true and is immutable after creation. Disable only for a
+                  trusted migration target that must preserve arbitrary POSIX metadata.
+                type: boolean
+                x-kubernetes-validations:
+                - message: nfsRootSquash is immutable
+                  rule: self == oldSelf
               nfsTLSEnabled:
                 default: false
                 description: |-

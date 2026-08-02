@@ -36,6 +36,8 @@ var (
 	errUnsupportedTransport     = errors.New("sc param \"transport\" must be nvme-tcp")
 	errInvalidEncrypted         = errors.New("sc param \"encrypted\" must be bool")
 	errInvalidNFSTLS            = errors.New("sc param \"nfsTLS\" must be bool")
+	errInvalidNFSRootSquash     = errors.New("sc param \"nfsRootSquash\" must be bool")
+	errNFSRootSquashRequiresFS  = errors.New("sc param \"nfsRootSquash\" requires type=filesystem")
 	errNFSTLSRequiresFilesystem = errors.New("sc param \"nfsTLS\" requires type=filesystem")
 	errInvalidNVMeTLS           = errors.New("sc param \"nvmeTLS\" must be bool")
 	errNVMeTLSRequiresBlock     = errors.New("sc param \"nvmeTLS\" requires type=block and transport=nvme-tcp")
@@ -53,6 +55,7 @@ func parseSCParams(params map[string]string) (scParams, error) {
 		Transport:           "nvme-tcp",
 		Type:                "block",
 		NFSExportAccessMode: defaultNFSExportAccessMode,
+		NFSRootSquash:       true,
 	}
 
 	if v := getSCParam(params, "pool"); v != "" {
@@ -100,6 +103,15 @@ func parseSCParams(params map[string]string) (scParams, error) {
 
 	if v := getSCParam(params, "nfsExportAccessMode"); v != "" {
 		p.NFSExportAccessMode = strings.ToLower(v)
+	}
+
+	if v, ok := lookupSCParam(params, "nfsRootSquash"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return p, fmt.Errorf("%w: got %q", errInvalidNFSRootSquash, v)
+		}
+		p.NFSRootSquash = b
+		p.NFSRootSquashSpecified = true
 	}
 
 	if v := getSCParam(params, "nfsTLS"); v != "" {
@@ -233,6 +245,9 @@ func validateSCParams(p scParams) error {
 	}
 
 	if p.Type != "filesystem" {
+		if p.NFSRootSquashSpecified {
+			return errNFSRootSquashRequiresFS
+		}
 		if p.NFSTLSSpecified {
 			return errNFSTLSRequiresFilesystem
 		}

@@ -246,8 +246,8 @@ type requestDenial struct {
 }
 
 func (r *Reconciler) validateRequest(pcr *certificatesv1beta1.PodCertificateRequest) (*ecdsa.PublicKey, *requestDenial) {
-	if pcr.Namespace != r.DriverNamespace || pcr.Spec.ServiceAccountName != "zfs-csi-node" {
-		return nil, denyRequest("UnauthorizedRequester", fmt.Sprintf("request must target namespace %q and service account %q", r.DriverNamespace, "zfs-csi-node"))
+	if pcr.Namespace != r.DriverNamespace || (pcr.Spec.ServiceAccountName != "zfs-csi-node" && pcr.Spec.ServiceAccountName != "zfs-csi-storage") {
+		return nil, denyRequest("UnauthorizedRequester", fmt.Sprintf("request must target namespace %q and service account %q or %q", r.DriverNamespace, "zfs-csi-node", "zfs-csi-storage"))
 	}
 	if len(validation.IsDNS1123Subdomain(pcr.Namespace)) != 0 || pcr.Spec.PodName == "" || pcr.Spec.PodUID == "" || pcr.Spec.ServiceAccountName == "" || pcr.Spec.ServiceAccountUID == "" || pcr.Spec.NodeName == "" || pcr.Spec.NodeUID == "" {
 		return nil, denyRequest("InvalidIdentity", "complete attested pod, service-account, and node identity is required")

@@ -59,6 +59,22 @@ func TestMarshalExportAnswerRootFlags(t *testing.T) {
 	}
 }
 
+func TestMarshalExportAnswerCanDisableRootSquash(t *testing.T) {
+	e := Entry{Path: "/tank/migration", UUID: [16]byte{1}, NoRootSquash: true}
+	line := marshalExportAnswer(e, "*", e.Path, 123, false)
+	fields := strings.Fields(line)
+	if len(fields) < 4 {
+		t.Fatalf("short answer: %q", line)
+	}
+	flags, err := strconv.Atoi(fields[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags&nfsexpRootSquash != 0 {
+		t.Fatalf("flags %#x unexpectedly contain root_squash", flags)
+	}
+}
+
 func TestMarshalExportAnswerSecinfoRetainsAuthorizationFlags(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

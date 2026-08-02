@@ -239,9 +239,14 @@ type requestedVolume struct {
 	srcVol           string
 	nfsCIDRs         []string
 	nfsMode          string
+	nfsRootSquash    bool
 	nfsTLS           bool
 	nvmeTLS          bool
 	networkDomain    string
+}
+
+func effectiveNFSRootSquash(value *bool) bool {
+	return value == nil || *value
 }
 
 // volumeSpecCompatible returns codes.AlreadyExists when an existing Volume CR is
@@ -301,6 +306,10 @@ func volumeSpecCompatible(existing *zfscsiv1.VolumeSpec, want requestedVolume) e
 		return status.Errorf(codes.AlreadyExists,
 			"volume already exists with incompatible NFS export access mode (existing=%q requested=%q)",
 			existingNFSMode, want.nfsMode)
+	case want.kind == zfscsiv1.VolumeTypeFilesystem && effectiveNFSRootSquash(existing.NFSRootSquash) != want.nfsRootSquash:
+		return status.Errorf(codes.AlreadyExists,
+			"volume already exists with incompatible NFS root squash intent (existing=%t requested=%t)",
+			effectiveNFSRootSquash(existing.NFSRootSquash), want.nfsRootSquash)
 	case want.kind == zfscsiv1.VolumeTypeFilesystem && existing.NFSTLSEnabled != want.nfsTLS:
 		return status.Errorf(codes.AlreadyExists,
 			"volume already exists with incompatible NFS TLS intent (existing=%t requested=%t)",
@@ -602,6 +611,7 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		srcVol:           sourceVolumeID,
 		nfsCIDRs:         sp.NFSExportCIDRs,
 		nfsMode:          sp.NFSExportAccessMode,
+		nfsRootSquash:    sp.NFSRootSquash,
 		nfsTLS:           sp.NFSTLSEnabled,
 		nvmeTLS:          sp.NVMeTLSEnabled,
 	}
@@ -718,6 +728,7 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 			SourceVolumeID:       sourceVolumeID,
 			NFSExportCIDRs:       sp.NFSExportCIDRs,
 			NFSExportAccessMode:  sp.NFSExportAccessMode,
+			NFSRootSquash:        ptr.To(sp.NFSRootSquash),
 			NFSTLSEnabled:        sp.NFSTLSEnabled,
 			NVMeTLSEnabled:       sp.NVMeTLSEnabled,
 			NVMeTLSPSKSecretName: pskSecretName,

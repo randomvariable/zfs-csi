@@ -788,10 +788,18 @@ func TestVolumeSpecCompatibleTreatsNFSExportCIDRsAsSet(t *testing.T) {
 	}
 	want := requestedVolume{
 		pool: "tank", capacityRequired: 1, kind: zfscsiv1.VolumeTypeFilesystem, ownerNode: "storage-0",
-		nfsCIDRs: []string{"2001:db8::/64", "10.42.0.0/16"}, nfsMode: "rw",
+		nfsCIDRs: []string{"2001:db8::/64", "10.42.0.0/16"}, nfsMode: "rw", nfsRootSquash: true,
 	}
 	if err := volumeSpecCompatible(existing, want); err != nil {
 		t.Fatalf("equivalent CIDR set rejected: %v", err)
+	}
+}
+
+func TestVolumeSpecCompatibleDefaultsLegacyNFSRootSquash(t *testing.T) {
+	existing := &zfscsiv1.VolumeSpec{Type: zfscsiv1.VolumeTypeFilesystem}
+	want := requestedVolume{kind: zfscsiv1.VolumeTypeFilesystem, nfsMode: "rw", nfsRootSquash: true}
+	if err := volumeSpecCompatible(existing, want); err != nil {
+		t.Fatalf("legacy root-squash default rejected: %v", err)
 	}
 }
 
@@ -2671,6 +2679,25 @@ func TestParseSCParams(t *testing.T) {
 		}
 		if p.NFSTLSEnabled {
 			t.Fatal("nfsTLS default = true, want false")
+		}
+		if !p.NFSRootSquash {
+			t.Fatal("nfsRootSquash default = false, want true")
+		}
+	})
+	t.Run("NFS root squash opt out", func(t *testing.T) {
+		p, err := parseSCParams(map[string]string{
+			"pool": "tank", "type": "filesystem", "nfsExportCIDRs": "10.0.0.0/24", "nfsRootSquash": "false",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.NFSRootSquash {
+			t.Fatal("nfsRootSquash = true, want false")
+		}
+	})
+	t.Run("NFS root squash block rejected", func(t *testing.T) {
+		if _, err := parseSCParams(map[string]string{"pool": "tank", "nfsRootSquash": "false"}); err == nil {
+			t.Fatal("expected block nfsRootSquash validation error")
 		}
 	})
 	t.Run("nfs TLS filesystem", func(t *testing.T) {

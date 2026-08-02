@@ -203,8 +203,18 @@ spec:
           command: ["/bin/sh", "-ceu"]
           args:
             - |-
+              # Mirror client PodCertificate material to modes accepted by tlshd.
+              (
+                while true; do
+                  cp -fL /run/zfs-csi-tls-client-projected/tls.crt /run/zfs-csi-tls-client/tls.crt 2>/dev/null || true
+                  cp -fL /run/zfs-csi-tls-client-projected/tls.key /run/zfs-csi-tls-client/tls.key 2>/dev/null || true
+                  cp -fL /run/zfs-csi-tls-ca/ca.crt /run/zfs-csi-tls-client/ca.crt 2>/dev/null || true
+                  chmod 0644 /run/zfs-csi-tls-client/tls.crt /run/zfs-csi-tls-client/ca.crt 2>/dev/null || true
+                  chmod 0600 /run/zfs-csi-tls-client/tls.key 2>/dev/null || true
+                  sleep 5
+                done
+              ) &
               /usr/sbin/tlshd -s -c /etc/tlshd/config
-              exec sleep infinity
 {{- range $root.Values.network.tls.tlshd.extraArgs }}
             - {{ . | quote }}
 {{- end }}
@@ -220,6 +230,11 @@ spec:
             - name: tls-server-cert
               mountPath: /run/zfs-csi-tls
               readOnly: true
+            - name: tls-client-projected
+              mountPath: /run/zfs-csi-tls-client-projected
+              readOnly: true
+            - name: tls-client-live
+              mountPath: /run/zfs-csi-tls-client
             - name: tls-ca
               mountPath: /run/zfs-csi-tls-ca
               readOnly: true
@@ -271,6 +286,19 @@ spec:
               - key: ca.crt
                 path: ca.crt
             optional: false
+        - name: tls-client-projected
+          projected:
+            defaultMode: 0400
+            sources:
+              - podCertificate:
+                  signerName: zfs.csi.randomvariable.co.uk/nfs-client
+                  keyType: ECDSAP256
+                  maxExpirationSeconds: 3600
+                  certificateChainPath: tls.crt
+                  keyPath: tls.key
+        - name: tls-client-live
+          emptyDir:
+            medium: Memory
         - name: tlshd-config
           configMap:
             name: zfs-csi-tlshd-storage-config

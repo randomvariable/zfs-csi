@@ -211,11 +211,18 @@ type VolumeSpec struct {
 	NFSExportCIDRs []string `json:"nfsExportCIDRs,omitempty"`
 
 	// nfsExportAccessMode controls whether the allowed NFS CIDRs are exported read-write or read-only.
-	// The reconciler always adds root_squash and never accepts raw sharenfs strings.
 	// +optional
 	// +kubebuilder:validation:Enum=rw;ro
 	// +default="rw"
 	NFSExportAccessMode string `json:"nfsExportAccessMode,omitempty"`
+
+	// nfsRootSquash maps uid 0 from NFS clients to the anonymous user. It
+	// defaults to true and is immutable after creation. Disable only for a
+	// trusted migration target that must preserve arbitrary POSIX metadata.
+	// +optional
+	// +default=true
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="nfsRootSquash is immutable"
+	NFSRootSquash *bool `json:"nfsRootSquash,omitempty"`
 
 	// nfsTLSEnabled requests RPC-with-TLS for filesystem NFS consumers. It is
 	// immutable because changing transport security on an existing export can
