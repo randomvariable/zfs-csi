@@ -1,0 +1,25 @@
+charts/zfs-csi/values.yaml
+  s_5bd1e7644796c6::t_4bbfacf6054472 286-294
+charts/zfs-csi/values.schema.json
+  s_5bd1e7644796c6::t_948088670fe2c8 234-236
+charts/zfs-csi/templates/storageclasses.yaml
+  s_5bd1e7644796c6::t_4bbfacf6054472 17,162-176
+  s_5bd1e7644796c6::t_05637f63a3b4f1 21-23
+  s_5bd1e7644796c6::t_0082247069a093 177-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "7e13fbfb1fc59383bd722d1d718e3cd906921885",
+  "prompts": {},
+  "sessions": {
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
