@@ -97,6 +97,34 @@ func TestTLSEnabledRenderIncludesRuntimeWorkloads(t *testing.T) {
 	assertNodeTLSRuntimeUsesNodeConfig(t, objectsByKind(objects, "DaemonSet"))
 }
 
+func TestMultiOwnerTLSHasOneDaemonPerStorageHost(t *testing.T) {
+	args := []string{
+		"--set", "node.enabled=true",
+		"--set", "storage.enabled=true",
+		"--set", "network.tls.enabled=true",
+		"--set-json", `storageOwners=[{"name":"storage-a","enabled":true,"nodeSelector":{"zfs.csi.randomvariable.co.uk/storage":"storage-a"},"authoritativePoolGUIDs":["1"],"poolMountRoot":"/tank","nfs":{"host":"10.0.0.7","port":2049},"nvme":{"host":"10.0.0.7","port":4420},"networkDomain":"fabric-a","reachableFrom":["fabric-a","workers"]}]`,
+	}
+	objects := renderedObjects(t, renderChart(t, args...))
+	for _, daemonSet := range objectsByKind(objects, "DaemonSet") {
+		if strings.Contains(marshalObject(t, daemonSet), "app.kubernetes.io/component: node") && strings.Contains(marshalObject(t, daemonSet), "name: tlshd") {
+			t.Fatal("multi-owner node DaemonSet must not race storage-owner tlshd")
+		}
+	}
+	for _, deployment := range objectsByKind(objects, "Deployment") {
+		text := marshalObject(t, deployment)
+		if !strings.Contains(text, "app.kubernetes.io/component: storage") {
+			continue
+		}
+		for _, want := range []string{"name: tlshd", "podCertificate:", "name: tls-client-live", "/run/zfs-csi-tls-client"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("storage-owner tlshd missing combined client/server contract %q", want)
+			}
+		}
+		return
+	}
+	t.Fatal("multi-owner render missing storage deployment")
+}
+
 func TestTLSDisabledRenderHasNoRuntimeMaterial(t *testing.T) {
 	args := append(legacyStorageArgs(), "--set", "node.enabled=true", "--set", "network.tls.enabled=false")
 	output := renderChart(t, args...)

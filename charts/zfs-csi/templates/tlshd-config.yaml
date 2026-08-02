@@ -42,8 +42,8 @@ data:
     # also consume NFS exports, so their daemon carries both client and server
     # credentials rather than racing a second node-plugin daemon.
     x509.truststore= /run/zfs-csi-tls-client/ca.crt
-    x509.certificate= /run/zfs-csi-tls/tls.crt
-    x509.private_key= /run/zfs-csi-tls/tls.key
+    x509.certificate= /run/zfs-csi-tls-client/tls.crt
+    x509.private_key= /run/zfs-csi-tls-client/tls.key
 
     [authenticate.server]
     # Storage tlshd trusts the shared CA and uses a per-owner ServerAuth leaf.

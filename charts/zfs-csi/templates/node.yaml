@@ -16,7 +16,6 @@
 
 {{- if .Values.node.enabled }}
 {{- $multiOwner := gt (len .Values.storageOwners) 0 }}
-{{- $hasTLSDedicatedOwners := and $multiOwner .Values.storage.enabled .Values.network.tls.enabled }}
 {{- $networkDomainSource := .Values.node.networkDomainSource | default "static" }}
 {{- if $multiOwner }}{{- $networkDomainSource = "nodeLabel" }}{{- end }}
 {{- if not (has $networkDomainSource (list "static" "nodeLabel")) }}
@@ -71,15 +70,6 @@ spec:
       # tolerates the storage taint could not attach there.
       tolerations:
         - operator: Exists
-{{- if $hasTLSDedicatedOwners }}
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: zfs.csi.randomvariable.co.uk/storage
-                    operator: DoesNotExist
-{{- end }}
 {{- with .Values.node.nodeSelector }}
       # Scheduling constraints from node.nodeSelector.
       nodeSelector:
@@ -198,7 +188,7 @@ spec:
               command: ["test", "-S", "/stage/nfs.sock"]
             initialDelaySeconds: 1
             periodSeconds: 5
-{{- if .Values.network.tls.enabled }}
+{{- if and .Values.network.tls.enabled (not $multiOwner) }}
         - name: tlshd
           image: {{ include "zfs-csi.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -272,7 +262,7 @@ spec:
         - name: sys
           hostPath:
             path: /sys
-{{- if .Values.network.tls.enabled }}
+{{- if and .Values.network.tls.enabled (not $multiOwner) }}
         - name: run-zfs
           hostPath:
             path: /run/zfs-csi
