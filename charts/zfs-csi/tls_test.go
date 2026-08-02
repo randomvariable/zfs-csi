@@ -110,7 +110,7 @@ func TestMultiOwnerTLSHasOneDaemonPerStorageHost(t *testing.T) {
 		if !strings.Contains(text, "app.kubernetes.io/component: node") {
 			continue
 		}
-		for _, want := range []string{"name: tlshd", "name: node-labels", "name: storage-owner-labels", `/etc/podinfo/labels`, "grep -Fqf /etc/podinfo/storage-owner-labels", "exec sleep infinity"} {
+		for _, want := range []string{"name: tlshd", "name: node-labels", "name: storage-owner-labels", `/etc/podinfo/labels`, "grep -Fqf /etc/zfs-csi/storage-owner-labels", "exec sleep infinity"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("multi-owner node tlshd gate missing %q", want)
 			}

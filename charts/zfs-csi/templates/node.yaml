@@ -199,7 +199,7 @@ spec:
               # Storage workload owns the host-global handshake queue on owner
               # nodes. Keep this sidecar alive there without starting a second
               # tlshd; ordinary nodes still run the client daemon below.
-              if grep -Fqf /etc/podinfo/storage-owner-labels /etc/podinfo/labels; then
+              if grep -Fqf /etc/zfs-csi/storage-owner-labels /etc/podinfo/labels; then
                 exec sleep infinity
               fi
 {{- end }}
@@ -246,7 +246,7 @@ spec:
               mountPath: /etc/podinfo
               readOnly: true
             - name: storage-owner-labels
-              mountPath: /etc/podinfo/storage-owner-labels
+              mountPath: /etc/zfs-csi/storage-owner-labels
               subPath: storage-owner-labels
               readOnly: true
 {{- end }}
