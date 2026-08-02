@@ -977,12 +977,7 @@ func newKeyProvider(addr, token, role, jwtPath, mount string) crypto.KeyProvider
 
 	var opts []openbao.Option
 	if token == "" {
-		jwt, err := os.ReadFile(jwtPath)
-		if err != nil {
-			return nopKeyProvider{}
-		}
-
-		opts = append(opts, openbao.WithKubernetesAuth(role, strings.TrimSpace(string(jwt))))
+		opts = append(opts, openbao.WithKubernetesAuth(role, jwtPath))
 	}
 
 	p, err := openbao.New(addr, token, mount, nil, opts...)

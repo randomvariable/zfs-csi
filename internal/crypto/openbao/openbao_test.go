@@ -22,8 +22,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -81,8 +85,12 @@ func TestProviderKubernetesAuthUsesLoginTokenForTransit(t *testing.T) {
 	fixture := newProviderFixture(t)
 	fixture.wantTransitToken = "k8s-logged-in"
 	defer fixture.server.Close()
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("k8s-token-xyz\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
-	provider, err := New(fixture.server.URL+"/", "static-token", "/transit/", fixture.server.Client(), WithKubernetesAuth("zfs-csi", "k8s-token-xyz"))
+	provider, err := New(fixture.server.URL+"/", "static-token", "/transit/", fixture.server.Client(), WithKubernetesAuth("zfs-csi", jwtPath))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -281,5 +289,112 @@ func TestProviderParsesOpenBaoErrors(t *testing.T) {
 	_, err = provider.Fetch(context.Background(), encodeRef("key", "vault:v1:cipher"))
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("Fetch() error = %v, want parsed permission denied", err)
+	}
+}
+
+func TestProviderKubernetesAuthReauthenticatesAndRereadsJWT(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt-one\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var loginCount, decryptCount int
+	var loginJWTs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			loginCount++
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			loginJWTs = append(loginJWTs, body["jwt"])
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"auth": map[string]string{"client_token": "k8s-token-" + string(rune('0'+loginCount))},
+			})
+		case "/v1/transit/decrypt/key":
+			decryptCount++
+			if r.Header.Get("X-Vault-Token") == "k8s-token-1" {
+				if err := os.WriteFile(jwtPath, []byte("jwt-two\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
+				"plaintext": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("zfs-csi", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "vault:v1:cipher")); err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if loginCount != 2 || decryptCount != 2 {
+		t.Fatalf("login/decrypt requests = %d/%d, want 2/2", loginCount, decryptCount)
+	}
+	if want := []string{"jwt-one", "jwt-two"}; !reflect.DeepEqual(loginJWTs, want) {
+		t.Fatalf("login JWTs = %#v, want %#v", loginJWTs, want)
+	}
+}
+
+func TestProviderStaticTokenDoesNotRetryAuthRejection(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/v1/transit/decrypt/key" {
+			t.Errorf("unexpected request path %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	provider, err := New(server.URL, "static-token", "transit", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "vault:v1:cipher")); err == nil {
+		t.Fatal("Fetch() succeeded, want auth rejection")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestProviderKubernetesAuthRetryBounded(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var loginCount, decryptCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/auth/kubernetes/login" {
+			loginCount++
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]string{
+				"client_token": fmt.Sprintf("token-%d", loginCount),
+			}})
+			return
+		}
+		decryptCount++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("zfs-csi", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "vault:v1:cipher")); err == nil {
+		t.Fatal("Fetch() succeeded, want auth rejection")
+	}
+	if loginCount != 2 || decryptCount != 2 {
+		t.Fatalf("login/decrypt requests = %d/%d, want 2/2", loginCount, decryptCount)
 	}
 }

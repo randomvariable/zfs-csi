@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -61,8 +62,8 @@ type dataKeyResponse struct {
 }
 
 type kubernetesAuth struct {
-	role string
-	jwt  string
+	role    string
+	jwtPath string
 }
 
 // Option configures an OpenBao provider.
@@ -71,7 +72,7 @@ type Option func(*Provider)
 // WithKubernetesAuth authenticates to OpenBao via the Kubernetes auth method.
 func WithKubernetesAuth(role, jwt string) Option {
 	return func(p *Provider) {
-		p.kubernetesAuth = &kubernetesAuth{role: role, jwt: jwt}
+		p.kubernetesAuth = &kubernetesAuth{role: role, jwtPath: jwt}
 	}
 }
 
@@ -256,6 +257,23 @@ func (p *Provider) do(ctx context.Context, method, path string, in any, out any)
 		return err
 	}
 
+	err = p.doWithToken(ctx, method, path, in, out, token)
+	if err == nil || p.kubernetesAuth == nil || !isAuthRejected(err) {
+		return err
+	}
+
+	// Do not clear a token installed by another request while this request was
+	// in flight.
+	p.authMu.Lock()
+	if p.authenticatedToken == token {
+		p.authenticatedToken = ""
+	}
+	p.authMu.Unlock()
+
+	token, err = p.authToken(ctx)
+	if err != nil {
+		return err
+	}
 	return p.doWithToken(ctx, method, path, in, out, token)
 }
 
@@ -271,6 +289,11 @@ func (p *Provider) authToken(ctx context.Context) (string, error) {
 		return p.authenticatedToken, nil
 	}
 
+	jwt, err := os.ReadFile(p.kubernetesAuth.jwtPath)
+	if err != nil {
+		return "", fmt.Errorf("openbao: read Kubernetes JWT: %w", err)
+	}
+
 	var out struct {
 		Auth struct {
 			ClientToken string `json:"client_token"`
@@ -278,7 +301,7 @@ func (p *Provider) authToken(ctx context.Context) (string, error) {
 	}
 	if err := p.doWithToken(ctx, http.MethodPost, "auth/kubernetes/login", map[string]string{
 		"role": p.kubernetesAuth.role,
-		"jwt":  p.kubernetesAuth.jwt,
+		"jwt":  strings.TrimSpace(string(jwt)),
 	}, &out, ""); err != nil {
 		return "", err
 	}
@@ -289,6 +312,20 @@ func (p *Provider) authToken(ctx context.Context) (string, error) {
 
 	p.authenticatedToken = out.Auth.ClientToken
 	return p.authenticatedToken, nil
+}
+
+type httpStatusError struct {
+	status int
+	err    error
+}
+
+func (e *httpStatusError) Error() string { return e.err.Error() }
+func (e *httpStatusError) Unwrap() error { return e.err }
+
+func isAuthRejected(err error) bool {
+	var statusErr *httpStatusError
+	return errors.As(err, &statusErr) &&
+		(statusErr.status == http.StatusUnauthorized || statusErr.status == http.StatusForbidden)
 }
 
 func (p *Provider) doWithToken(ctx context.Context, method, path string, in any, out any, token string) error {
@@ -367,7 +404,10 @@ func parseError(resp *http.Response) error {
 		msg = resp.Status
 	}
 
-	return fmt.Errorf("%w: %s: %s", errOpenBaoHTTPStatus, resp.Status, msg)
+	return &httpStatusError{
+		status: resp.StatusCode,
+		err:    fmt.Errorf("%w: %s: %s", errOpenBaoHTTPStatus, resp.Status, msg),
+	}
 }
 
 func (p *Provider) mountPath(parts ...string) string {
