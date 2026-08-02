@@ -1,0 +1,21 @@
+charts/zfs-csi/templates/node.yaml
+  s_5bd1e7644796c6::t_e78f95010580e1 202,249
+charts/zfs-csi/tls_test.go
+  s_5bd1e7644796c6::t_e78f95010580e1 113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "b63b7b01fae0b5bc7dfae91388f56400e48c076f",
+  "prompts": {},
+  "sessions": {
+    "s_5bd1e7644796c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_040540671ffebn9AOv01VRgQgF",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
