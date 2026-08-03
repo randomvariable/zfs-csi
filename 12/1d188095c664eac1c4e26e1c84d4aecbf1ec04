@@ -1,0 +1,42 @@
+internal/crypto/openbao/openbao.go
+  s_8a0ff4ec789d57::t_8ad1c517fd5e5e 335-337
+  s_8a0ff4ec789d57::t_a8c56bc01c2f60 71,73
+  s_8a0ff4ec789d57::t_175be748a821e7 99-100,283,299-305,307-315,319-333,338-344,346-349,351,353-367,370-372,379,382-384,389-390,398
+  s_b0cbe62a94f3f8::t_faa67192597e2c 495,498-499
+  s_8a0ff4ec789d57::t_a2130345f4e81d 69-70,72,74-76,96-98,282,316-318,334,345,374,380-381,385-388,391-393,395,397,399,401-409,411-415
+internal/crypto/openbao/openbao_test.go
+  s_8a0ff4ec789d57::t_34dc1b10c6cb04 305,309,339-348,350-362,366-401
+  s_8a0ff4ec789d57::t_dee3a0d02bdb81 363-364
+  s_8a0ff4ec789d57::t_d89fb897f781cf 32,164-246
+  s_8a0ff4ec789d57::t_d2fbca21699799 34
+  s_8a0ff4ec789d57::t_f158bf558a9d81 118,255
+  s_8a0ff4ec789d57::t_49b10f3c7182c5 349
+  s_b0cbe62a94f3f8::t_1dab2a49928edb 649-651,700-704
+  s_b0cbe62a94f3f8::t_faa67192597e2c 653,663-667,690
+  s_8a0ff4ec789d57::t_77675c8ef3c4ae 113-117,119-163,247-254,256-304,306-308,310-338,402-404
+  s_8a0ff4ec789d57::t_10e803f54e4c5f 365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "121d188095c664eac1c4e26e1c84d4aecbf1ec04",
+  "prompts": {},
+  "sessions": {
+    "s_8a0ff4ec789d57": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_038e96c1effefxnlgPZHeRpuyc",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    },
+    "s_b0cbe62a94f3f8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_038ec7f07ffep6tfWGa06GFeY3",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Naadir Jeewa <naadir@randomvariable.co.uk>"
+    }
+  }
+}
