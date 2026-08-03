@@ -66,6 +66,14 @@ type kubernetesAuth struct {
 	jwtPath string
 }
 
+type authResponse struct {
+	Auth *struct {
+		ClientToken   string `json:"client_token"`
+		LeaseDuration int    `json:"lease_duration"`
+		Renewable     bool   `json:"renewable"`
+	} `json:"auth"`
+}
+
 // Option configures an OpenBao provider.
 type Option func(*Provider)
 
@@ -85,6 +93,11 @@ type Provider struct {
 
 	kubernetesAuth     *kubernetesAuth
 	authenticatedToken string
+	authLeaseDuration  time.Duration
+	authRenewable      bool
+	authExpiresAt      time.Time
+	authGeneration     uint64
+	authDone           chan struct{}
 	authMu             sync.Mutex
 }
 
@@ -266,7 +279,8 @@ func (p *Provider) do(ctx context.Context, method, path string, in any, out any)
 	// in flight.
 	p.authMu.Lock()
 	if p.authenticatedToken == token {
-		p.authenticatedToken = ""
+		p.clearAuthToken()
+		p.authGeneration++
 	}
 	p.authMu.Unlock()
 
@@ -282,36 +296,123 @@ func (p *Provider) authToken(ctx context.Context) (string, error) {
 		return p.token, nil
 	}
 
-	p.authMu.Lock()
-	defer p.authMu.Unlock()
+	for {
+		p.authMu.Lock()
+		if p.authenticatedToken != "" && !p.authRenewalDue() {
+			token := p.authenticatedToken
+			p.authMu.Unlock()
+			return token, nil
+		}
 
-	if p.authenticatedToken != "" {
-		return p.authenticatedToken, nil
+		if p.authDone != nil {
+			done := p.authDone
+			p.authMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+
+		oldToken := p.authenticatedToken
+		generation := p.authGeneration
+		done := make(chan struct{})
+		p.authDone = done
+		p.authMu.Unlock()
+
+		newToken, lease, renewable, err := p.refreshAuth(ctx, oldToken)
+
+		p.authMu.Lock()
+		if err == nil {
+			// Do not overwrite a token installed by another request while this
+			// request was doing I/O. If the old token was invalidated, this
+			// result is still safe to install as the next generation.
+			if p.authGeneration == generation || p.authenticatedToken == "" {
+				p.authenticatedToken = newToken
+				p.setAuthLease(lease, renewable)
+			}
+		} else if p.authGeneration == generation && p.authenticatedToken == oldToken {
+			p.clearAuthToken()
+			p.authGeneration++
+		}
+		p.authDone = nil
+		close(done)
+		token := p.authenticatedToken
+		p.authMu.Unlock()
+		if err != nil {
+			return "", err
+		}
+		if token != "" {
+			return token, nil
+		}
+		return newToken, nil
+	}
+}
+
+func (p *Provider) refreshAuth(ctx context.Context, oldToken string) (string, int, bool, error) {
+	if oldToken != "" {
+		p.authMu.Lock()
+		renewable := p.authRenewable
+		p.authMu.Unlock()
+		if renewable {
+			var renewed authResponse
+			if err := p.doWithToken(ctx, http.MethodPost, "auth/token/renew-self", nil, &renewed, oldToken); err == nil && renewed.Auth != nil && renewed.Auth.LeaseDuration > 0 {
+				token := renewed.Auth.ClientToken
+				if token == "" {
+					token = oldToken
+				}
+				return token, renewed.Auth.LeaseDuration, renewed.Auth.Renewable, nil
+			}
+		}
 	}
 
 	jwt, err := os.ReadFile(p.kubernetesAuth.jwtPath)
 	if err != nil {
-		return "", fmt.Errorf("openbao: read Kubernetes JWT: %w", err)
+		return "", 0, false, fmt.Errorf("openbao: read Kubernetes JWT: %w", err)
 	}
-
-	var out struct {
-		Auth struct {
-			ClientToken string `json:"client_token"`
-		} `json:"auth"`
-	}
+	var out authResponse
 	if err := p.doWithToken(ctx, http.MethodPost, "auth/kubernetes/login", map[string]string{
 		"role": p.kubernetesAuth.role,
 		"jwt":  strings.TrimSpace(string(jwt)),
 	}, &out, ""); err != nil {
-		return "", err
+		return "", 0, false, err
 	}
-
-	if out.Auth.ClientToken == "" {
-		return "", errMissingAuthClientToken
+	if out.Auth == nil || out.Auth.ClientToken == "" {
+		return "", 0, false, errMissingAuthClientToken
 	}
+	return out.Auth.ClientToken, out.Auth.LeaseDuration, out.Auth.Renewable, nil
+}
 
-	p.authenticatedToken = out.Auth.ClientToken
-	return p.authenticatedToken, nil
+func (p *Provider) setAuthLease(seconds int, renewable bool) {
+	p.authLeaseDuration = time.Duration(seconds) * time.Second
+	p.authRenewable = renewable
+	if seconds > 0 {
+		p.authExpiresAt = time.Now().Add(p.authLeaseDuration)
+	} else {
+		p.authExpiresAt = time.Time{}
+	}
+}
+
+func (p *Provider) authRenewalDue() bool {
+	if p.authLeaseDuration <= 0 || p.authExpiresAt.IsZero() {
+		return false
+	}
+	threshold := p.authLeaseDuration / 3
+	if threshold < time.Second {
+		threshold = time.Second
+	}
+	if threshold > p.authLeaseDuration/2 {
+		threshold = p.authLeaseDuration / 2
+	}
+	return !time.Now().Before(p.authExpiresAt.Add(-threshold))
+}
+
+func (p *Provider) clearAuthToken() {
+	p.authenticatedToken = ""
+	p.authLeaseDuration = 0
+	p.authRenewable = false
+	p.authExpiresAt = time.Time{}
 }
 
 type httpStatusError struct {
@@ -391,11 +492,11 @@ func parseError(resp *http.Response) error {
 	}
 	if err := json.Unmarshal(body, &parsed); err == nil {
 		if len(parsed.Errors) > 0 {
-			return fmt.Errorf("%w: %s: %s", errOpenBaoHTTPStatus, resp.Status, strings.Join(parsed.Errors, "; "))
+			body = []byte(strings.Join(parsed.Errors, "; "))
 		}
 
-		if parsed.Error != "" {
-			return fmt.Errorf("%w: %s: %s", errOpenBaoHTTPStatus, resp.Status, parsed.Error)
+		if len(parsed.Errors) == 0 && parsed.Error != "" {
+			body = []byte(parsed.Error)
 		}
 	}
 

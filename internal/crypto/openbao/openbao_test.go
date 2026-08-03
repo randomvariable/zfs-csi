@@ -29,7 +29,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/randomvariable/zfs-csi/internal/crypto"
 )
@@ -105,6 +107,298 @@ func TestProviderKubernetesAuthUsesLoginTokenForTransit(t *testing.T) {
 
 	if got, want := fixture.requests[0].path, "/v1/auth/kubernetes/login"; got != want {
 		t.Fatalf("first request path = %q, want %q", got, want)
+	}
+}
+
+func TestProviderKubernetesAuthProactivelyRenewsToken(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var logins, renewals, decrypts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			logins++
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"client_token": "token-1", "lease_duration": 1, "renewable": true,
+			}})
+		case "/v1/auth/token/renew-self":
+			renewals++
+			if r.Header.Get("X-Vault-Token") != "token-1" {
+				t.Errorf("renew token = %q", r.Header.Get("X-Vault-Token"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"lease_duration": 60, "renewable": true,
+			}})
+		case "/v1/transit/decrypt/key":
+			decrypts++
+			if got := r.Header.Get("X-Vault-Token"); got != "token-1" {
+				t.Errorf("decrypt token = %q, want token-1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
+				"plaintext": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("role", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	// Force the short initial lease into its proactive renewal window.
+	provider.authMu.Lock()
+	provider.authExpiresAt = time.Now().Add(-time.Second)
+	provider.authMu.Unlock()
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	if logins != 1 || renewals != 1 || decrypts != 2 {
+		t.Fatalf("login/renew/decrypt = %d/%d/%d, want 1/1/2", logins, renewals, decrypts)
+	}
+}
+
+func TestProviderKubernetesAuthConcurrentRefreshSharesRenewal(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var logins, renewals, decrypts int
+	renewStarted := make(chan struct{})
+	releaseRenew := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			logins++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"client_token": "token", "lease_duration": 60, "renewable": true,
+			}})
+			return
+		case "/v1/auth/token/renew-self":
+			renewals++
+			if renewals == 1 {
+				close(renewStarted)
+			}
+			mu.Unlock()
+			<-releaseRenew
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"lease_duration": 60, "renewable": true,
+			}})
+			return
+		case "/v1/transit/decrypt/key":
+			decrypts++
+		}
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
+			"plaintext": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+		}})
+	}))
+	defer server.Close()
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("role", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	provider.authMu.Lock()
+	provider.authExpiresAt = time.Now().Add(-time.Second)
+	provider.authMu.Unlock()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := provider.Fetch(context.Background(), encodeRef("key", "cipher"))
+			errs <- err
+		}()
+	}
+	<-renewStarted
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	gotRenewals := renewals
+	mu.Unlock()
+	if gotRenewals != 1 {
+		t.Fatalf("renewals while refresh in flight = %d, want 1", gotRenewals)
+	}
+	close(releaseRenew)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if logins != 1 || renewals != 1 || decrypts != 3 {
+		t.Fatalf("login/renew/decrypt = %d/%d/%d, want 1/1/3", logins, renewals, decrypts)
+	}
+}
+
+func TestProviderKubernetesAuthRenewalFailureFallsBackToLogin(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt-one\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var logins, renewals int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			logins++
+			if logins == 2 {
+				if err := os.WriteFile(jwtPath, []byte("jwt-two\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"client_token": fmt.Sprintf("token-%d", logins), "lease_duration": 60, "renewable": true,
+			}})
+		case "/v1/auth/token/renew-self":
+			renewals++
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors":["permission denied"]}`))
+		case "/v1/transit/decrypt/key":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
+				"plaintext": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("role", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	provider.authMu.Lock()
+	provider.authExpiresAt = time.Now().Add(-time.Second)
+	provider.authMu.Unlock()
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	if logins != 2 || renewals != 1 {
+		t.Fatalf("login/renew = %d/%d, want 2/1", logins, renewals)
+	}
+}
+
+func TestProviderKubernetesAuthNonrenewableTokenIsNotRenewed(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var renewals, logins int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			logins++
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"client_token": "token", "lease_duration": 1, "renewable": false,
+			}})
+		case "/v1/auth/token/renew-self":
+			renewals++
+			t.Error("unexpected renewal")
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		case "/v1/transit/decrypt/key":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
+				"plaintext": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("role", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	provider.authMu.Lock()
+	provider.authExpiresAt = time.Now().Add(-time.Second)
+	provider.authMu.Unlock()
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	if renewals != 0 || logins != 2 {
+		t.Fatalf("renewals/logins = %d/%d, want 0/2", renewals, logins)
+	}
+}
+
+func TestProviderKubernetesAuthAcceptsFinalLeaseRenewal(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var logins, renewals, decrypts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			logins++
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"client_token": "token-1", "lease_duration": 1, "renewable": true,
+			}})
+		case "/v1/auth/token/renew-self":
+			renewals++
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"client_token": "token-final", "lease_duration": 60, "renewable": false,
+			}})
+		case "/v1/transit/decrypt/key":
+			decrypts++
+			if decrypts == 2 && r.Header.Get("X-Vault-Token") != "token-final" {
+				t.Errorf("token after final renewal = %q, want token-final", r.Header.Get("X-Vault-Token"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
+				"plaintext": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("role", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	provider.authMu.Lock()
+	provider.authExpiresAt = time.Now().Add(-time.Second)
+	provider.authMu.Unlock()
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	if logins != 1 || renewals != 1 {
+		t.Fatalf("logins/renewals = %d/%d, want 1/1", logins, renewals)
+	}
+
+	// The final lease is non-renewable, but still expires and must trigger login.
+	provider.authMu.Lock()
+	provider.authExpiresAt = time.Now().Add(-time.Second)
+	provider.authMu.Unlock()
+	if _, err := provider.Fetch(context.Background(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	if logins != 2 || renewals != 1 {
+		t.Fatalf("after final lease logins/renewals = %d/%d, want 2/1", logins, renewals)
 	}
 }
 
@@ -352,7 +646,11 @@ func TestProviderStaticTokenDoesNotRetryAuthRejection(t *testing.T) {
 		if r.URL.Path != "/v1/transit/decrypt/key" {
 			t.Errorf("unexpected request path %q", r.URL.Path)
 		}
+		if got := r.Header.Get("X-Vault-Token"); got != "static-token" {
+			t.Errorf("token header = %q, want static-token", got)
+		}
 		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"errors":["permission denied"]}`))
 	}))
 	defer server.Close()
 
@@ -362,6 +660,11 @@ func TestProviderStaticTokenDoesNotRetryAuthRejection(t *testing.T) {
 	}
 	if _, err := provider.Fetch(context.Background(), encodeRef("key", "vault:v1:cipher")); err == nil {
 		t.Fatal("Fetch() succeeded, want auth rejection")
+	} else {
+		var statusErr *httpStatusError
+		if !errors.As(err, &statusErr) || statusErr.status != http.StatusForbidden {
+			t.Fatalf("Fetch() error = %v, want HTTP 403 status error", err)
+		}
 	}
 	if requests != 1 {
 		t.Fatalf("requests = %d, want 1", requests)
@@ -384,6 +687,7 @@ func TestProviderKubernetesAuthRetryBounded(t *testing.T) {
 		}
 		decryptCount++
 		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errors":["permission denied"]}`))
 	}))
 	defer server.Close()
 
@@ -393,6 +697,11 @@ func TestProviderKubernetesAuthRetryBounded(t *testing.T) {
 	}
 	if _, err := provider.Fetch(context.Background(), encodeRef("key", "vault:v1:cipher")); err == nil {
 		t.Fatal("Fetch() succeeded, want auth rejection")
+	} else {
+		var statusErr *httpStatusError
+		if !errors.As(err, &statusErr) || statusErr.status != http.StatusUnauthorized {
+			t.Fatalf("Fetch() error = %v, want HTTP 401 status error", err)
+		}
 	}
 	if loginCount != 2 || decryptCount != 2 {
 		t.Fatalf("login/decrypt requests = %d/%d, want 2/2", loginCount, decryptCount)
