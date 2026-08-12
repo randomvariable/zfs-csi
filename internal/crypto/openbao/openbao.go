@@ -332,7 +332,7 @@ func (p *Provider) authToken(ctx context.Context) (string, error) {
 				p.authenticatedToken = newToken
 				p.setAuthLease(lease, renewable)
 			}
-		} else if p.authGeneration == generation && p.authenticatedToken == oldToken {
+		} else if ctx.Err() == nil && p.authGeneration == generation && p.authenticatedToken == oldToken {
 			p.clearAuthToken()
 			p.authGeneration++
 		}

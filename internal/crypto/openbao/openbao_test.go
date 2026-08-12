@@ -247,6 +247,82 @@ func TestProviderKubernetesAuthConcurrentRefreshSharesRenewal(t *testing.T) {
 	}
 }
 
+func TestProviderKubernetesAuthCancelledRefreshKeepsCachedToken(t *testing.T) {
+	jwtPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwtPath, []byte("jwt\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var logins, renewals int
+	renewStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			logins++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"client_token": "token", "lease_duration": 60, "renewable": true,
+			}})
+			return
+		case "/v1/auth/token/renew-self":
+			renewals++
+			first := renewals == 1
+			mu.Unlock()
+			if first {
+				close(renewStarted)
+				<-r.Context().Done()
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
+				"lease_duration": 60, "renewable": true,
+			}})
+			return
+		case "/v1/transit/decrypt/key":
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
+				"plaintext": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+			}})
+			return
+		default:
+			mu.Unlock()
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(server.URL, "", "transit", server.Client(), WithKubernetesAuth("role", jwtPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Fetch(t.Context(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	provider.authMu.Lock()
+	provider.authExpiresAt = time.Now().Add(-time.Second)
+	provider.authMu.Unlock()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	errs := make(chan error, 1)
+	go func() {
+		_, err := provider.Fetch(ctx, encodeRef("key", "cipher"))
+		errs <- err
+	}()
+	<-renewStarted
+	cancel()
+	if err := <-errs; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled refresh error = %v, want context cancellation", err)
+	}
+
+	if _, err := provider.Fetch(t.Context(), encodeRef("key", "cipher")); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if logins != 1 || renewals != 2 {
+		t.Fatalf("login/renew = %d/%d, want 1/2", logins, renewals)
+	}
+}
+
 func TestProviderKubernetesAuthRenewalFailureFallsBackToLogin(t *testing.T) {
 	jwtPath := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(jwtPath, []byte("jwt-one\n"), 0600); err != nil {

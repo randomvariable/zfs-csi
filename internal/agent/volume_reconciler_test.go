@@ -1797,6 +1797,102 @@ func TestReconcileDelete_CryptoShreds(t *testing.T) {
 	}
 }
 
+func TestReconcileDeleteWaitsForSnapshotDeletion(t *testing.T) {
+	d := newTestDeps(t)
+	r := d.reconciler()
+	poolGUID, err := d.zfsb.PoolGUID(t.Context(), "tank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := &zfscsiv1.Volume{
+		ObjectMeta: metav1.ObjectMeta{Name: "snapshot-source"},
+		Spec: zfscsiv1.VolumeSpec{
+			Pool: "tank", PoolGUID: poolGUID, OwnerNode: "storage-a", Type: zfscsiv1.VolumeTypeBlock,
+			Capacity: 1 << 30, VolumeID: "csi:tank:block:snapshot-source", Transport: zfscsiv1.TransportNVMeTCP,
+		},
+		Status: zfscsiv1.VolumeStatus{State: zfscsiv1.VolumeStateDeleting},
+	}
+	snap := &zfscsiv1.Snapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: "snapshot"},
+		Spec: zfscsiv1.SnapshotSpec{
+			VolumeRef: vol.Name, SourceVolumeID: vol.Spec.VolumeID, OwnerNode: "storage-a", PoolGUID: poolGUID,
+		},
+	}
+	if err := d.zfsb.Create(t.Context(), zfs.CreateOptions{Name: "tank/csi/block/snapshot-source", Kind: zfs.KindBlock, Capacity: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := r.Reconcile(t.Context(), reconcile.Request{NamespacedName: crclient.ObjectKeyFromObject(vol)})
+	if err != nil {
+		t.Fatalf("reconcile while Snapshot exists: %v", err)
+	}
+	if result.RequeueAfter != 10*time.Second {
+		t.Fatalf("requeue while Snapshot exists = %s, want 10s", result.RequeueAfter)
+	}
+	exists, err := d.zfsb.Exists(t.Context(), "tank/csi/block/snapshot-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("deleted Volume destroyed while Snapshot still exists")
+	}
+
+	if err := d.Delete(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(t.Context(), reconcile.Request{NamespacedName: crclient.ObjectKeyFromObject(vol)}); err != nil {
+		t.Fatalf("reconcile after Snapshot delete: %v", err)
+	}
+	exists, err = d.zfsb.Exists(t.Context(), "tank/csi/block/snapshot-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("deleted Volume remains after Snapshot deletion")
+	}
+}
+
+func TestReconcileDeleteRetainedVolumeAllowsSnapshot(t *testing.T) {
+	d := newTestDeps(t)
+	r := d.reconciler()
+	poolGUID, err := d.zfsb.PoolGUID(t.Context(), "tank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := &zfscsiv1.Volume{
+		ObjectMeta: metav1.ObjectMeta{Name: "retained-snapshot-source", Finalizers: []string{zfscsiv1.VolumeFinalizer}},
+		Spec: zfscsiv1.VolumeSpec{
+			Pool: "tank", PoolGUID: poolGUID, OwnerNode: "storage-a", Type: zfscsiv1.VolumeTypeBlock,
+			Capacity: 1 << 30, VolumeID: "csi:tank:block:retained-snapshot-source", Transport: zfscsiv1.TransportNVMeTCP,
+			DeletionPolicy: zfscsiv1.VolumeDeletionPolicyRetain,
+		},
+		Status: zfscsiv1.VolumeStatus{State: zfscsiv1.VolumeStateDeleting},
+	}
+	snap := &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "retained-snapshot"}, Spec: zfscsiv1.SnapshotSpec{VolumeRef: vol.Name, SourceVolumeID: vol.Spec.VolumeID}}
+	if err := d.zfsb.Create(t.Context(), zfs.CreateOptions{Name: "tank/csi/block/retained-snapshot-source", Kind: zfs.KindBlock, Capacity: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(t.Context(), reconcile.Request{NamespacedName: crclient.ObjectKeyFromObject(vol)}); err != nil {
+		t.Fatal(err)
+	}
+	exists, err := d.zfsb.Exists(t.Context(), "tank/csi/block/retained-snapshot-source")
+	if err != nil || !exists {
+		t.Fatalf("retained dataset exists = %t, %v; want retained", exists, err)
+	}
+}
+
 func TestReconcileDelete_UnexportFailurePreservesRetainedBackends(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

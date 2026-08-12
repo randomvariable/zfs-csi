@@ -306,6 +306,30 @@ func TestCreateSnapshotDerivesOwnerNodeAndRejectsUnavailableOwner(t *testing.T) 
 		t.Fatalf("snapshot with unavailable owner exists: %v", err)
 	}
 }
+func TestCreateSnapshotRejectsDeletingSource(t *testing.T) {
+	ctx := t.Context()
+	source := &zfscsiv1.Volume{
+		ObjectMeta: metav1.ObjectMeta{Name: "deleting-source", Finalizers: []string{zfscsiv1.VolumeFinalizer}},
+		Spec: zfscsiv1.VolumeSpec{
+			Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, OwnerNode: "storage-a",
+			VolumeID: "csi:tank:block:deleting-source", VolBlockSize: zfs.DefaultVolBlockSizeValue,
+		},
+	}
+	c := newTestClient(t, source)
+	if err := c.Delete(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := newTestController(c).CreateSnapshot(ctx, &csi.CreateSnapshotRequest{
+		Name: "during-delete", SourceVolumeId: source.Spec.VolumeID,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CreateSnapshot error = %v, want %s", err, codes.FailedPrecondition)
+	}
+	if err := c.Get(ctx, crclient.ObjectKey{Name: "during-delete"}, &zfscsiv1.Snapshot{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("snapshot created from deleting source: %v", err)
+	}
+}
 
 func TestCreateVolumeUsesInventoryPortalNotControllerFlag(t *testing.T) {
 	cs := newTestController(newTestClient(t))
@@ -1702,6 +1726,63 @@ func TestDeleteVolume_MarksDeleting(t *testing.T) {
 	_, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "csi:tank:block:del"})
 	if err != nil {
 		t.Fatalf("DeleteVolume: %v", err)
+	}
+}
+
+func TestDeleteVolumeDefersSnapshotBackedDestruction(t *testing.T) {
+	c := newTestClient(t)
+	cs := newTestController(c)
+	vol := &zfscsiv1.Volume{
+		ObjectMeta: metav1.ObjectMeta{Name: "snapshot-source"},
+		Spec: zfscsiv1.VolumeSpec{
+			Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:snapshot-source",
+		},
+	}
+	snap := &zfscsiv1.Snapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: "snapshot"},
+		Spec: zfscsiv1.SnapshotSpec{
+			VolumeRef: vol.Name, SourceVolumeID: vol.Spec.VolumeID,
+		},
+	}
+	if err := c.Create(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := cs.DeleteVolume(t.Context(), &csi.DeleteVolumeRequest{VolumeId: vol.Spec.VolumeID}); err != nil {
+		t.Fatalf("DeleteVolume with live Snapshot: %v", err)
+	}
+
+	deleted := &zfscsiv1.Volume{}
+	if err := c.Get(t.Context(), apimachinerytypes.NamespacedName{Name: vol.Name}, deleted); err != nil {
+		t.Fatalf("get deletion-pending Volume: %v", err)
+	}
+	if deleted.DeletionTimestamp.IsZero() {
+		t.Fatal("DeleteVolume must request Volume CR deletion")
+	}
+}
+
+func TestDeleteVolumeAllowsRetainedSnapshotBackedVolume(t *testing.T) {
+	c := newTestClient(t)
+	cs := newTestController(c)
+	vol := &zfscsiv1.Volume{
+		ObjectMeta: metav1.ObjectMeta{Name: "retained-snapshot-source"},
+		Spec: zfscsiv1.VolumeSpec{
+			Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:retained-snapshot-source",
+			DeletionPolicy: zfscsiv1.VolumeDeletionPolicyRetain,
+		},
+	}
+	snap := &zfscsiv1.Snapshot{ObjectMeta: metav1.ObjectMeta{Name: "retained-snapshot"}, Spec: zfscsiv1.SnapshotSpec{VolumeRef: vol.Name, SourceVolumeID: vol.Spec.VolumeID}}
+	if err := c.Create(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.DeleteVolume(t.Context(), &csi.DeleteVolumeRequest{VolumeId: vol.Spec.VolumeID}); err != nil {
+		t.Fatalf("DeleteVolume retained backend: %v", err)
 	}
 }
 

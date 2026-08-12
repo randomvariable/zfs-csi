@@ -664,7 +664,34 @@ func persistNVMeIdentity(staging string, source *stagepb.NVMeSource) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(nvmeIdentityPath(staging), data, 0o600)
+	path := nvmeIdentityPath(staging)
+	dirPath := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dirPath, nvmeIdentitySuffix+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(dirPath)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func loadNVMeIdentity(staging string) (*stagepb.NVMeSource, error) {

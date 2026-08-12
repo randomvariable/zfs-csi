@@ -356,6 +356,29 @@ func TestNVMeIdentityPersistsForConsistentUnstage(t *testing.T) {
 	}
 }
 
+func TestNVMeIdentityOverwriteKeepsCleanupRecord(t *testing.T) {
+	staging := filepath.Join(t.TempDir(), "stage")
+	nqn, err := naming.TargetNQN("storage-a", "1", zfs.KindBlock, "same-volume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &stagepb.NVMeSource{TargetNqn: nqn, Portal: "storage-a:4421", NamespaceId: 1, DeviceGuid: "0123456789abcdef0123456789abcdef"}
+	second := &stagepb.NVMeSource{TargetNqn: nqn, Portal: "storage-b:4421", NamespaceId: 1, DeviceGuid: "fedcba9876543210fedcba9876543210"}
+	if err := persistNVMeIdentity(staging, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistNVMeIdentity(staging, second); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadNVMeIdentity(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetPortal() != second.GetPortal() || got.GetDeviceGuid() != second.GetDeviceGuid() {
+		t.Fatalf("loaded identity=%#v, want %#v", got, second)
+	}
+}
+
 func TestPublishContextTLSValueRejectsAmbiguousValue(t *testing.T) {
 	t.Parallel()
 

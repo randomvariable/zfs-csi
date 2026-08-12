@@ -886,6 +886,7 @@ func (s *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolu
 			req.GetVolumeId(), nodes, zfscsiv1.ForceDeleteAnnotation)
 	}
 
+
 	// Ensure deletion is held until the agent finishes dataset/export/DEK cleanup.
 	patch := crclient.MergeFrom(vol.DeepCopy())
 	ensureFinalizer(&vol.Finalizers, zfscsiv1.VolumeFinalizer)
@@ -1233,6 +1234,9 @@ func (s *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 	source := &zfscsiv1.Volume{}
 	if err := s.client.Get(ctx, apimachinerytypes.NamespacedName{Name: crNameFor(p.ID)}, source); err != nil {
 		return nil, status.Errorf(codes.NotFound, "source volume CR: %v", err)
+	}
+	if !source.DeletionTimestamp.IsZero() {
+		return nil, status.Error(codes.FailedPrecondition, "source volume is deleting")
 	}
 	if source.Spec.Provenance == zfscsiv1.VolumeProvenanceImported {
 		return nil, status.Error(codes.FailedPrecondition, "snapshots are not supported for imported volumes")

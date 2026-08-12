@@ -2231,9 +2231,8 @@ func (r *VolumeReconciler) reconcileDelete(
 	dataset string,
 ) (reconcile.Result, error) {
 	// In-use guard (F6): do NOT unexport/destroy while the volume is still mapped
-	// to a node — an out-of-band CR delete (one that bypassed the controller's
-	// DeleteVolume guard) must not rip the target out from under live I/O. The
-	// controller normally blocks this, so a mapped-yet-deleting volume here is a
+	// to a node. CSI DeleteVolume only requests CR deletion; the reconciler keeps
+	// its finalizer until teardown is safe. A mapped-yet-deleting volume is a
 	// stale VolumeAttachment or manual delete. Requeue at low priority (so it
 	// cannot crowd out provisioning) and emit a Warning naming the node. The
 	// operator escape is the force-delete annotation, which clears the guard.
@@ -2311,6 +2310,18 @@ func (r *VolumeReconciler) reconcileDelete(
 		}
 		r.clearNFSWithdrawal(dataset)
 		return reconcile.Result{}, nil
+	}
+	// DeleteVolume and direct CR deletion both arrive here. Keep the finalizer
+	// and backend until Snapshot finalization removes every referencing object.
+	snapshots := &zfscsiv1.SnapshotList{}
+	if err := r.List(ctx, snapshots); err != nil {
+		return reconcile.Result{}, fmt.Errorf("list snapshots for volume delete: %w", err)
+	}
+	for i := range snapshots.Items {
+		snap := &snapshots.Items[i]
+		if snap.Spec.VolumeRef == vol.Name && snap.DeletionTimestamp.IsZero() {
+			return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 	}
 	// Unload key (if loaded) then destroy.
 	if vol.Spec.EncryptionKeyRef != "" {
