@@ -82,11 +82,12 @@ func TestNodeExpand_BlockSkipsResize(t *testing.T) {
 	mounter := &recordingMountOps{}
 	server := newLoggingTestNode(&recordingLogSink{}, mounter)
 	volumeID := testVolumeID(t, zfs.KindBlock)
+	staging := t.TempDir()
 
 	resp, err := server.NodeExpandVolume(ctx, &csi.NodeExpandVolumeRequest{
 		VolumeId:          volumeID,
-		VolumePath:        "/stage/vol",
-		StagingTargetPath: "/stage/vol",
+		VolumePath:        staging,
+		StagingTargetPath: staging,
 		CapacityRange:     &csi.CapacityRange{RequiredBytes: 42 << 20},
 		VolumeCapability: &csi.VolumeCapability{
 			AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
@@ -109,11 +110,12 @@ func TestNodeExpand_FilesystemResizesWithDevice(t *testing.T) {
 	mounter := &recordingMountOps{}
 	server := newLoggingTestNode(&recordingLogSink{}, mounter)
 	volumeID := testVolumeID(t, zfs.KindBlock)
+	staging := t.TempDir()
 
 	if _, err := server.NodeExpandVolume(ctx, &csi.NodeExpandVolumeRequest{
 		VolumeId:          volumeID,
-		VolumePath:        "/stage/vol",
-		StagingTargetPath: "/stage/vol",
+		VolumePath:        staging,
+		StagingTargetPath: staging,
 		CapacityRange:     &csi.CapacityRange{RequiredBytes: 10 << 20},
 		VolumeCapability: &csi.VolumeCapability{
 			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},

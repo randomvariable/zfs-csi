@@ -32,11 +32,13 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/go-logr/logr"
 	"github.com/randomvariable/zfs-csi/internal/nfs"
+	eventsv1 "github.com/randomvariable/zfs-csi/internal/observability/events"
 	"github.com/randomvariable/zfs-csi/internal/psk"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	coordinationv1 "k8s.io/api/coordination/v1"
+		"google.golang.org/protobuf/types/known/wrapperspb"
+coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -858,8 +860,11 @@ func (s *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolu
 
 	crName := crNameFor(p.ID)
 
+	// Read uncached: the in-use guard below must see the mapping state left by a
+	// ControllerUnpublishVolume that may have returned moments ago, which the
+	// manager's watch cache can still lag.
 	vol := &zfscsiv1.Volume{}
-	if err := s.client.Get(ctx, apimachinerytypes.NamespacedName{Name: crName}, vol); err != nil {
+	if err := s.reader().Get(ctx, apimachinerytypes.NamespacedName{Name: crName}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
 			return &csi.DeleteVolumeResponse{}, nil
 		}
@@ -885,7 +890,6 @@ func (s *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolu
 			"volume %s still published to node(s) %v; unpublish first or set annotation %s=true to force",
 			req.GetVolumeId(), nodes, zfscsiv1.ForceDeleteAnnotation)
 	}
-
 
 	// Ensure deletion is held until the agent finishes dataset/export/DEK cleanup.
 	patch := crclient.MergeFrom(vol.DeepCopy())
@@ -927,10 +931,17 @@ func (s *ControllerServer) ControllerPublishVolume(ctx context.Context, req *csi
 	if req.GetVolumeId() == "" || req.GetNodeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id + node_id required")
 	}
+	// Request validation precedes any lookup: a caller that omitted a required
+	// field gets InvalidArgument regardless of whether the volume exists.
+	if req.GetVolumeCapability() == nil {
+		return nil, status.Error(codes.InvalidArgument, "volume_capability required")
+	}
 
+	// A malformed volume_id cannot name a volume this driver provisioned, so it
+	// is an unknown volume rather than a bad argument (CSI: NotFound).
 	p, err := naming.ParseVolID(req.GetVolumeId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "parse volume id: %v", err)
+		return nil, status.Errorf(codes.NotFound, "unknown volume id: %v", err)
 	}
 
 	crName := crNameFor(p.ID)
@@ -938,6 +949,19 @@ func (s *ControllerServer) ControllerPublishVolume(ctx context.Context, req *csi
 	vol := &zfscsiv1.Volume{}
 	if err := s.client.Get(ctx, apimachinerytypes.NamespacedName{Name: crName}, vol); err != nil {
 		return nil, status.Errorf(codes.NotFound, "volume CR: %v", err)
+	}
+
+	// The attachment target must be a node of this cluster. Publishing to a node
+	// that no longer exists would record an initiator mapping the agent can never
+	// satisfy and would block a later delete on a stale in-use guard. Read
+	// uncached: a Node deletion must be observed immediately, and the controller
+	// has no other use for a cluster-wide Node informer.
+	if err := s.reader().Get(ctx, apimachinerytypes.NamespacedName{Name: req.GetNodeId()}, &corev1.Node{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "node %q does not exist", req.GetNodeId())
+		}
+
+		return nil, status.Errorf(codes.Internal, "get node %q: %v", req.GetNodeId(), err)
 	}
 
 	if vol.Status.CurrentState() != zfscsiv1.VolumeStateReady && vol.Status.CurrentState() != zfscsiv1.VolumeStateReadyToPublish {
@@ -1000,15 +1024,20 @@ func (s *ControllerServer) ControllerUnpublishVolume(ctx context.Context, req *c
 		return nil, status.Error(codes.InvalidArgument, "volume_id required")
 	}
 
-	p, err := naming.ParseVolID(req.GetVolumeId())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "parse volume id: %v", err)
+	// Unpublish is idempotent: an id this driver could never have issued names
+	// nothing to unmap.
+	p, ok := parseVolumeID(req.GetVolumeId())
+	if !ok {
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 
 	crName := crNameFor(p.ID)
 
+	// Read uncached: DeleteVolume's in-use guard reads the mapping this call
+	// clears, so the write must be made against current state, not a watch cache
+	// that may still hold a mapping this very call already removed.
 	vol := &zfscsiv1.Volume{}
-	if err := s.client.Get(ctx, apimachinerytypes.NamespacedName{Name: crName}, vol); err != nil {
+	if err := s.reader().Get(ctx, apimachinerytypes.NamespacedName{Name: crName}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
 			return &csi.ControllerUnpublishVolumeResponse{}, nil
 		}
@@ -1022,6 +1051,12 @@ func (s *ControllerServer) ControllerUnpublishVolume(ctx context.Context, req *c
 
 	nodeID := req.GetNodeId()
 	if err := s.removeMappedInitiatorWithRetry(ctx, vol, nodeID); err != nil {
+		// The volume can be deleted between the read above and this patch.
+		// Unpublish is idempotent: a volume that no longer exists carries no
+		// initiator mapping.
+		if apierrors.IsNotFound(err) {
+			return &csi.ControllerUnpublishVolumeResponse{}, nil
+		}
 		logging.LogWith(s.log, logging.OpPatchVolumeStatus, logging.KeyVolumeID, req.GetVolumeId(), logging.KeyCRName, crName, logging.KeyInitiator, nodeID).Failed(err)
 
 		return nil, status.Errorf(codes.Internal, "patch initiator unmap: %v", err)
@@ -1073,7 +1108,7 @@ func (s *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.
 
 	p, err := naming.ParseVolID(req.GetVolumeId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "parse volume id: %v", err)
+		return nil, status.Errorf(codes.NotFound, "unknown volume id: %v", err)
 	}
 
 	crName := crNameFor(p.ID)
@@ -1229,7 +1264,7 @@ func (s *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 
 	p, err := naming.ParseVolID(req.GetSourceVolumeId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "parse source volume id: %v", err)
+		return nil, status.Errorf(codes.NotFound, "unknown source volume id: %v", err)
 	}
 	source := &zfscsiv1.Volume{}
 	if err := s.client.Get(ctx, apimachinerytypes.NamespacedName{Name: crNameFor(p.ID)}, source); err != nil {
@@ -1395,32 +1430,53 @@ func (s *ControllerServer) ValidateVolumeCapabilities(ctx context.Context, req *
 
 func (s *ControllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
 	list := &zfscsiv1.VolumeList{}
-	// Volumes are cluster-scoped and their names are globally unique CSI identities.
-	if err := s.client.List(ctx, list); err != nil {
+	// Volumes are cluster-scoped and their names are globally unique CSI
+	// identities. Read uncached: a caller that lists straight after a
+	// Create/DeleteVolume must observe that write, which the manager's watch
+	// cache can still lag.
+	if err := s.reader().List(ctx, list); err != nil {
 		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
 	}
+	// A volume whose DeleteVolume has returned is gone as far as the CO is
+	// concerned; the CR lingers only until the agent's finalizer completes
+	// backend teardown, so a deleting CR must not appear in the listing.
+	list.Items = slices.DeleteFunc(list.Items, func(v zfscsiv1.Volume) bool {
+		return !v.DeletionTimestamp.IsZero()
+	})
+	// Sort by CR name so pagination is over a stable order: the token is an
+	// index into this sequence and must not shift between calls.
+	slices.SortFunc(list.Items, func(a, b zfscsiv1.Volume) int { return strings.Compare(a.Name, b.Name) })
 
-	entries := make([]*csi.ListVolumesResponse_Entry, 0, len(list.Items))
-	for i := range list.Items {
-		v := &list.Items[i]
+	start, err := listStart(req.GetStartingToken(), len(list.Items))
+	if err != nil {
+		return nil, err
+	}
+	items, next := listPage(list.Items, start, req.GetMaxEntries())
+
+	entries := make([]*csi.ListVolumesResponse_Entry, 0, len(items))
+	for i := range items {
+		v := &items[i]
 		entries = append(entries, &csi.ListVolumesResponse_Entry{
 			Volume: &csi.Volume{
 				VolumeId:      v.Spec.VolumeID,
 				CapacityBytes: v.Status.ActualCapacity,
 			},
-			Status: &csi.ListVolumesResponse_VolumeStatus{
-				VolumeCondition: volumeConditionFor(v),
-			},
+			Status: &csi.ListVolumesResponse_VolumeStatus{},
 		})
 	}
 
-	return &csi.ListVolumesResponse{Entries: entries}, nil
+	return &csi.ListVolumesResponse{Entries: entries, NextToken: next}, nil
 }
 
+// GetCapacity reports provisionable capacity. The CSI parameters map is
+// optional: with no "pool" the response aggregates every pool the inventory
+// advertises, which is what an unfiltered CO query asks for.
 func (s *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
-	params, err := parseSCParams(req.GetParameters())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "parameters: %v", err)
+	pool := getSCParam(req.GetParameters(), "pool")
+	if len(req.GetParameters()) > 0 && pool != "" {
+		if _, err := parseSCParams(req.GetParameters()); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "parameters: %v", err)
+		}
 	}
 	requestedDomains := []string(nil)
 	if topology := req.GetAccessibleTopology(); topology != nil {
@@ -1430,10 +1486,7 @@ func (s *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 		}
 		requestedDomains = []string{domain}
 	}
-	reader := s.apiReader
-	if reader == nil {
-		reader = s.client
-	}
+	reader := s.reader()
 	nodes := &zfscsiv1.StorageNodeList{}
 	if err := reader.List(ctx, nodes); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "storage inventory unavailable: %v", err)
@@ -1442,7 +1495,26 @@ func (s *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 	if err := reader.List(ctx, volumes); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "volume reservations unavailable: %v", err)
 	}
-	if candidate, err := placement.Select(nodes.Items, volumes.Items, params.Pool, 0, time.Now(), "", "", requestedDomains...); err == nil {
+	if pool == "" {
+		// Unfiltered query: every pool the inventory advertises is a placement
+		// candidate, so report their combined free space. A single volume still
+		// has to fit one pool, so the largest candidate is the honest ceiling.
+		var total, largest int64
+		for _, name := range advertisedPools(nodes.Items) {
+			candidate, err := placement.Select(nodes.Items, volumes.Items, name, 0, time.Now(), "", "", requestedDomains...)
+			if err != nil {
+				continue
+			}
+			total += candidate.Available
+			largest = max(largest, candidate.Available)
+		}
+
+		return &csi.GetCapacityResponse{
+			AvailableCapacity: total,
+			MaximumVolumeSize: wrapperspb.Int64(largest),
+		}, nil
+	}
+	if candidate, err := placement.Select(nodes.Items, volumes.Items, pool, 0, time.Now(), "", "", requestedDomains...); err == nil {
 		return &csi.GetCapacityResponse{AvailableCapacity: candidate.Available}, nil
 	} else if len(requestedDomains) > 0 {
 		return &csi.GetCapacityResponse{AvailableCapacity: 0}, nil
@@ -1464,7 +1536,7 @@ func (s *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 		available int64 = -1
 	)
 	for i := range list.Items {
-		raw, ok := list.Items[i].Data[params.Pool]
+		raw, ok := list.Items[i].Data[pool]
 		if !ok {
 			continue
 		}
@@ -1477,9 +1549,28 @@ func (s *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 		}
 	}
 	if available < 0 {
-		return nil, status.Errorf(codes.Unavailable, "capacity for pool %q unavailable", params.Pool)
+		return nil, status.Errorf(codes.Unavailable, "capacity for pool %q unavailable", pool)
 	}
 	return &csi.GetCapacityResponse{AvailableCapacity: available}, nil
+}
+
+// advertisedPools returns the distinct pool names the storage inventory
+// currently advertises, in a stable order.
+func advertisedPools(nodes []zfscsiv1.StorageNode) []string {
+	seen := make(map[string]struct{})
+	names := make([]string, 0, len(nodes))
+	for i := range nodes {
+		for _, p := range nodes[i].Status.Pools {
+			if _, dup := seen[p.Name]; dup || p.Name == "" {
+				continue
+			}
+			seen[p.Name] = struct{}{}
+			names = append(names, p.Name)
+		}
+	}
+	slices.Sort(names)
+
+	return names
 }
 
 func (s *ControllerServer) ControllerGetCapabilities(ctx context.Context, req *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
@@ -1488,26 +1579,78 @@ func (s *ControllerServer) ControllerGetCapabilities(ctx context.Context, req *c
 
 func (s *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
 	list := &zfscsiv1.SnapshotList{}
-	// Snapshots are cluster-scoped and their names are globally unique CSI identities.
-	if err := s.client.List(ctx, list); err != nil {
+	// Snapshots are cluster-scoped and their names are globally unique CSI
+	// identities. Read uncached for the same reason as ListVolumes.
+	if err := s.reader().List(ctx, list); err != nil {
 		return nil, status.Errorf(codes.Internal, "list snapshots: %v", err)
 	}
 
-	entries := make([]*csi.ListSnapshotsResponse_Entry, 0, len(list.Items))
-	for i := range list.Items {
-		s := &list.Items[i]
+	// snapshot_id and source_volume_id are exact-match filters. An id that
+	// matches nothing — including one this driver could never have issued —
+	// yields an empty list, not an error.
+	items := make([]zfscsiv1.Snapshot, 0, len(list.Items))
+	for _, snap := range list.Items {
+		// A snapshot whose DeleteSnapshot has returned is gone as far as the CO
+		// is concerned; the CR lingers only until the agent's finalizer clears.
+		if !snap.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if id := req.GetSnapshotId(); id != "" && snap.Spec.SnapshotID != id {
+			continue
+		}
+		if src := req.GetSourceVolumeId(); src != "" && snap.Spec.SourceVolumeID != src {
+			continue
+		}
+		items = append(items, snap)
+	}
+	slices.SortFunc(items, func(a, b zfscsiv1.Snapshot) int { return strings.Compare(a.Name, b.Name) })
+
+	start, err := listStart(req.GetStartingToken(), len(items))
+	if err != nil {
+		return nil, err
+	}
+	page, next := listPage(items, start, req.GetMaxEntries())
+
+	entries := make([]*csi.ListSnapshotsResponse_Entry, 0, len(page))
+	for i := range page {
+		snap := &page[i]
 		entries = append(entries, &csi.ListSnapshotsResponse_Entry{
 			Snapshot: &csi.Snapshot{
-				SnapshotId:     s.Spec.SnapshotID,
-				SourceVolumeId: s.Spec.SourceVolumeID,
-				SizeBytes:      s.Status.SizeBytes(),
-				ReadyToUse:     s.Status.Ready(),
-				CreationTime:   timestampp(s.Status.CreatedAtUnix()),
+				SnapshotId:     snap.Spec.SnapshotID,
+				SourceVolumeId: snap.Spec.SourceVolumeID,
+				SizeBytes:      snap.Status.SizeBytes(),
+				ReadyToUse:     snap.Status.Ready(),
+				CreationTime:   timestampp(snap.Status.CreatedAtUnix()),
 			},
 		})
 	}
 
-	return &csi.ListSnapshotsResponse{Entries: entries}, nil
+	return &csi.ListSnapshotsResponse{Entries: entries, NextToken: next}, nil
+}
+
+// listStart resolves a CSI starting_token to an index into an already-ordered
+// listing. The CSI spec requires ABORTED for a token the SP cannot honour.
+func listStart(token string, total int) (int, error) {
+	if token == "" {
+		return 0, nil
+	}
+	start, err := strconv.Atoi(token)
+	if err != nil || start < 0 || start > total {
+		return 0, status.Errorf(codes.Aborted, "invalid starting_token %q", token)
+	}
+
+	return start, nil
+}
+
+// listPage slices one response page and returns the token for the next one, or
+// "" once the listing is exhausted.
+func listPage[T any](items []T, start int, maxEntries int32) ([]T, string) {
+	items = items[start:]
+	if maxEntries <= 0 || int(maxEntries) >= len(items) {
+		return items, ""
+	}
+
+	return items[:maxEntries], strconv.Itoa(start + int(maxEntries))
 }
 
 func (s *ControllerServer) GetSnapshot(ctx context.Context, req *csi.GetSnapshotRequest) (*csi.GetSnapshotResponse, error) {
@@ -1548,15 +1691,79 @@ func (s *ControllerServer) ControllerGetVolume(ctx context.Context, req *csi.Con
 			VolumeId:      vol.Spec.VolumeID,
 			CapacityBytes: vol.Status.ActualCapacity,
 		},
-		Status: &csi.ControllerGetVolumeResponse_VolumeStatus{
-			VolumeCondition: volumeConditionFor(vol),
-		},
+		Status: &csi.ControllerGetVolumeResponse_VolumeStatus{},
 	}, nil
 }
 
-// volumeConditionFor derives CSI health from persisted status. Backend health
-// takes precedence because the agent writes it before retrying a repair.
-func volumeConditionFor(vol *zfscsiv1.Volume) *csi.VolumeCondition {
+// ControllerGetVolumeHealth reports the controller's view of a single volume's
+// health, derived from the persisted Volume CR status (CSI 1.13 replaces the
+// removed VolumeCondition field with this RPC).
+func (s *ControllerServer) ControllerGetVolumeHealth(ctx context.Context, req *csi.ControllerGetVolumeHealthRequest) (*csi.ControllerGetVolumeHealthResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume_id required")
+	}
+
+	p, err := naming.ParseVolID(req.GetVolumeId())
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "unknown volume id: %v", err)
+	}
+
+	vol := &zfscsiv1.Volume{}
+	if err := s.client.Get(ctx, apimachinerytypes.NamespacedName{Name: crNameFor(p.ID)}, vol); err != nil {
+		return nil, status.Errorf(codes.NotFound, "volume CR: %v", err)
+	}
+
+	return &csi.ControllerGetVolumeHealthResponse{VolumeHealth: volumeHealthFor(vol)}, nil
+}
+
+// ControllerListVolumeHealth reports every volume the controller currently
+// considers unhealthy. Healthy volumes are omitted per the CSI contract, which
+// defines the response as the list of abnormal entries.
+func (s *ControllerServer) ControllerListVolumeHealth(ctx context.Context, req *csi.ControllerListVolumeHealthRequest) (*csi.ControllerListVolumeHealthResponse, error) {
+	if req.GetMaxEntries() < 0 {
+		return nil, status.Error(codes.InvalidArgument, "max_entries must not be negative")
+	}
+
+	list := &zfscsiv1.VolumeList{}
+	// Volumes are cluster-scoped and their names are globally unique CSI
+	// identities. Read uncached for the same reason as ListVolumes.
+	if err := s.reader().List(ctx, list); err != nil {
+		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
+	}
+	slices.SortFunc(list.Items, func(a, b zfscsiv1.Volume) int { return strings.Compare(a.Name, b.Name) })
+
+	unhealthy := make([]*csi.VolumeHealth, 0, len(list.Items))
+	for i := range list.Items {
+		health := volumeHealthFor(&list.Items[i])
+		if len(health.GetHealthStatuses()) > 0 {
+			unhealthy = append(unhealthy, health)
+		}
+	}
+
+	start, err := listStart(req.GetStartingToken(), len(unhealthy))
+	if err != nil {
+		return nil, err
+	}
+	entries, next := listPage(unhealthy, start, req.GetMaxEntries())
+
+	return &csi.ControllerListVolumeHealthResponse{Entries: entries, NextToken: next}, nil
+}
+
+// volumeHealthFor derives CSI health from persisted status. Backend health
+// takes precedence because the agent writes it before retrying a repair. A
+// volume with no adverse condition reports an empty status list.
+func volumeHealthFor(vol *zfscsiv1.Volume) *csi.VolumeHealth {
+	health := &csi.VolumeHealth{VolumeId: vol.Spec.VolumeID}
+	entry := func(kind csi.VolumeHealthErrorType, reason, message string) *csi.VolumeHealth {
+		health.HealthStatuses = []*csi.VolumeHealth_VolumeHealthEntry{{
+			Status:  kind,
+			Reason:  reason,
+			Message: message,
+		}}
+
+		return health
+	}
+
 	for _, c := range vol.Status.Conditions {
 		if c.Type == string(zfscsiv1.VolumeConditionBackendHealthy) && c.Status != metav1.ConditionTrue {
 			msg := c.Message
@@ -1564,13 +1771,13 @@ func volumeConditionFor(vol *zfscsiv1.Volume) *csi.VolumeCondition {
 				msg = "volume backend is unhealthy"
 			}
 
-			return &csi.VolumeCondition{Abnormal: true, Message: msg}
+			return entry(csi.VolumeHealthErrorType_INACCESSIBLE, eventsv1.ReasonBackendUnhealthy, msg)
 		}
 	}
 
 	switch vol.Status.State {
 	case zfscsiv1.VolumeStateReady, zfscsiv1.VolumeStateReadyToPublish:
-		return &csi.VolumeCondition{Abnormal: false, Message: "Ready"}
+		return health
 	case zfscsiv1.VolumeStateError:
 		msg := "volume in Error state"
 		for _, c := range vol.Status.Conditions {
@@ -1581,9 +1788,9 @@ func volumeConditionFor(vol *zfscsiv1.Volume) *csi.VolumeCondition {
 			}
 		}
 
-		return &csi.VolumeCondition{Abnormal: true, Message: msg}
+		return entry(csi.VolumeHealthErrorType_INACCESSIBLE, "VolumeError", msg)
 	default:
-		return &csi.VolumeCondition{Abnormal: true, Message: "not ready: " + string(vol.Status.State)}
+		return entry(csi.VolumeHealthErrorType_DEGRADED, "VolumeNotReady", "not ready: "+string(vol.Status.State))
 	}
 }
 
@@ -1598,7 +1805,7 @@ func (s *ControllerServer) ControllerModifyVolume(ctx context.Context, req *csi.
 
 	p, err := naming.ParseVolID(req.GetVolumeId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "parse volume id: %v", err)
+		return nil, status.Errorf(codes.NotFound, "unknown volume id: %v", err)
 	}
 
 	if err := validateMutableParams(req.GetMutableParameters()); err != nil {
@@ -1672,6 +1879,19 @@ func parseVolumeID(volumeID string) (naming.ParsedVolID, bool) {
 	p, err := naming.ParseVolID(volumeID)
 
 	return p, err == nil
+}
+
+// reader returns the read path that reflects the latest committed API state.
+// The manager-backed client serves from a watch cache that lags its own writes,
+// so any read-modify-write or listing that must observe a just-completed RPC
+// (unpublish before delete, a freshly created CR in a List) reads through the
+// APIReader instead.
+func (s *ControllerServer) reader() crclient.Reader {
+	if s.apiReader != nil {
+		return s.apiReader
+	}
+
+	return s.client
 }
 
 func parseSnapshotID(snapshotID string) (naming.ParsedVolID, string, bool) {
@@ -2111,7 +2331,7 @@ func validateVolumeContentSource(src *csi.VolumeContentSource, pool string, kind
 
 		p, _, parseErr := naming.ParseSnapID(snapshotID)
 		if parseErr != nil {
-			return "", "", status.Errorf(codes.InvalidArgument, "parse source snapshot id: %v", parseErr)
+			return "", "", status.Errorf(codes.NotFound, "unknown source snapshot id: %v", parseErr)
 		}
 		if p.Pool != pool || p.Kind != kind {
 			return "", "", status.Errorf(codes.InvalidArgument, "source snapshot %s does not match requested pool/type %s/%s", snapshotID, pool, kind)
@@ -2127,7 +2347,7 @@ func validateVolumeContentSource(src *csi.VolumeContentSource, pool string, kind
 
 		p, parseErr := naming.ParseVolID(volumeID)
 		if parseErr != nil {
-			return "", "", status.Errorf(codes.InvalidArgument, "parse source volume id: %v", parseErr)
+			return "", "", status.Errorf(codes.NotFound, "unknown source volume id: %v", parseErr)
 		}
 		if p.Pool != pool || p.Kind != kind {
 			return "", "", status.Errorf(codes.InvalidArgument, "source volume %s does not match requested pool/type %s/%s", volumeID, pool, kind)

@@ -677,12 +677,46 @@ func TestControllerEnablesVolumeAttributesClassResizer(t *testing.T) {
 }
 
 func TestControllerIncludesExternalHealthMonitor(t *testing.T) {
-	manifest, err := os.ReadFile("templates/controller.yaml")
-	if err != nil {
-		t.Fatalf("read controller template: %v", err)
+	args := append(multiOwnerArgs(true, false), "--set", "controller.enabled=true")
+	deployments := objectsByKind(renderedObjects(t, renderChart(t, args...)), "Deployment")
+	for _, deployment := range deployments {
+		if objectName(deployment) != "zfs-csi-controller" {
+			continue
+		}
+		for _, container := range podContainers(t, deployment) {
+			if container["name"] != "csi-external-health-monitor-controller" {
+				continue
+			}
+			image, _ := container["image"].(string)
+			// KEP-1432 support ships only in a staging build, so the sidecar
+			// must stay digest-pinned rather than following a floating tag.
+			if !strings.Contains(image, "@sha256:") {
+				t.Fatalf("health monitor image = %q, want a digest-pinned reference", image)
+			}
+			return
+		}
+		t.Fatalf("controller Deployment has no health monitor container: %s", marshalObject(t, deployment))
 	}
-	text := string(manifest)
-	if !strings.Contains(text, "csi-external-health-monitor-controller:v0.15.0") {
-		t.Fatal("controller must deploy the external health monitor against the CSI socket")
+	t.Fatal("controller Deployment missing from rendered chart")
+}
+
+func podContainers(t *testing.T, workload map[string]any) []map[string]any {
+	t.Helper()
+	spec, _ := workload["spec"].(map[string]any)
+	template, _ := spec["template"].(map[string]any)
+	podSpec, _ := template["spec"].(map[string]any)
+	raw, ok := podSpec["containers"].([]any)
+	if !ok {
+		t.Fatalf("workload %q has no containers: %s", objectName(workload), marshalObject(t, workload))
 	}
+	containers := make([]map[string]any, 0, len(raw))
+	for _, entry := range raw {
+		container, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("container entry = %#v, want object", entry)
+		}
+		containers = append(containers, container)
+	}
+
+	return containers
 }

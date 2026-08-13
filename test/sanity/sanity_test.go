@@ -37,8 +37,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	nvmetv1 "github.com/randomvariable/zfs-csi/api/nvmet/v1alpha1"
@@ -46,6 +48,7 @@ import (
 	"github.com/randomvariable/zfs-csi/internal/agent"
 	"github.com/randomvariable/zfs-csi/internal/crypto"
 	"github.com/randomvariable/zfs-csi/internal/driver"
+	"github.com/randomvariable/zfs-csi/internal/inventory"
 	"github.com/randomvariable/zfs-csi/internal/stage"
 	stagepb "github.com/randomvariable/zfs-csi/internal/stagepb/stage"
 	testenv "github.com/randomvariable/zfs-csi/internal/testutil/envtest"
@@ -54,7 +57,13 @@ import (
 	zfsfake "github.com/randomvariable/zfs-csi/internal/zfs/fake"
 )
 
-const sanityNamespace = "default"
+const (
+	sanityNamespace     = "default"
+	sanityNodeID        = "sanity"
+	sanityOwnerNode     = "sanity-node"
+	sanityPoolGUID      = "1"
+	sanityNetworkDomain = "workers"
+)
 
 func TestCSISanity(t *testing.T) {
 	tmp := t.TempDir()
@@ -113,7 +122,19 @@ func startSanityDriver(t *testing.T, addr string) func() {
 		t.Fatalf("create sanity manager: %v", err)
 	}
 
-	zfsBackend := zfsfake.New().WithPool("tank", 1<<40)
+	// Placement only selects pools advertised by a fresh, Ready StorageNode, so
+	// publish one for the fake pool and keep its observation timestamps current
+	// for the duration of the run (inventory.FreshnessTimeout bounds staleness).
+	// The reconciler also verifies each CR's pool GUID against the backend, so
+	// the fake pool carries the same identity the inventory advertises.
+	zfsBackend := zfsfake.New().WithPoolIdentity("tank", 1<<40, sanityPoolGUID, "ONLINE")
+	publishSanityInventory(ctx, t, h.Client)
+	// ControllerPublishVolume verifies the attachment target is a real node, so
+	// the harness must register the node id NodeGetInfo advertises.
+	if err := h.Client.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: sanityNodeID}}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create sanity Node: %v", err)
+	}
+
 	export := transport.New()
 	volRec := &agent.VolumeReconciler{
 		Client:   mgr.GetClient(),
@@ -153,8 +174,8 @@ func startSanityDriver(t *testing.T, addr string) func() {
 	csi.RegisterControllerServer(srv, driver.NewControllerServer(driver.ControllerConfig{
 		Log:       logr.Discard(),
 		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
 		Namespace: sanityNamespace,
-		OwnerNode: "sanity",
 		Portal:    "server7:4420",
 	}))
 	// Wire in-process StagePlugin sidecars (the node driver routes staging via
@@ -195,11 +216,14 @@ func startSanityDriver(t *testing.T, addr string) func() {
 	}
 
 	csi.RegisterNodeServer(srv, driver.NewNodeServer(driver.NodeConfig{
-		Log:        logr.Discard(),
-		NodeID:     "sanity",
-		PortalHost: "server7",
-		Mounter:    newFakeMounter(),
-		NFSServer:  "server7",
+		Log:    logr.Discard(),
+		NodeID: sanityNodeID,
+		// NodeGetInfo advertises this segment, and the controller requires the
+		// resulting topology on CreateVolume, so it must match the StorageNode.
+		NetworkDomain: sanityNetworkDomain,
+		PortalHost:    "server7",
+		Mounter:       newFakeMounter(),
+		NFSServer:     "server7",
 		StagePlugins: map[zfs.VolumeKind]*stage.Client{
 			zfs.KindBlock:      nvmetStageCli,
 			zfs.KindFilesystem: nfsStageCli,
@@ -232,6 +256,68 @@ func startSanityDriver(t *testing.T, addr string) func() {
 		}
 		h.Stop(t)
 	}
+}
+
+// publishSanityInventory creates the StorageNode the controller places against
+// and refreshes its observation timestamps until the context is cancelled.
+func publishSanityInventory(ctx context.Context, t *testing.T, c crclient.Client) {
+	t.Helper()
+	enabled := true
+	node := &zfscsiv1.StorageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: sanityOwnerNode, Generation: 1},
+		Spec: zfscsiv1.StorageNodeSpec{
+			AuthoritativePoolGUIDs: []string{sanityPoolGUID},
+			Enabled:                &enabled,
+			NetworkDomain:          sanityNetworkDomain,
+		},
+	}
+	if err := c.Create(ctx, node); err != nil {
+		t.Fatalf("create sanity StorageNode: %v", err)
+	}
+
+	refresh := func() error {
+		current := &zfscsiv1.StorageNode{}
+		if err := c.Get(ctx, apimachinerytypes.NamespacedName{Name: sanityOwnerNode}, current); err != nil {
+			return err
+		}
+		patch := crclient.MergeFrom(current.DeepCopy())
+		observed := metav1.Now()
+		current.Status = zfscsiv1.StorageNodeStatus{
+			ObservedGeneration: current.Generation,
+			LastObservedTime:   &observed,
+			ReachableFrom:      []string{sanityNetworkDomain},
+			Endpoints: []zfscsiv1.StorageNodeEndpoint{
+				{Protocol: zfscsiv1.StorageProtocolNFS, Host: "server7", Port: 2049},
+				{Protocol: zfscsiv1.StorageProtocolNVMeTCP, Host: "server7", Port: 4420},
+			},
+			Conditions: []metav1.Condition{{
+				Type: zfscsiv1.StorageNodeConditionReady, Status: metav1.ConditionTrue,
+				Reason: "Ready", LastTransitionTime: observed, ObservedGeneration: current.Generation,
+			}},
+			Pools: []zfscsiv1.StorageNodePoolStatus{{
+				GUID: sanityPoolGUID, Name: "tank", FreeBytes: 1 << 40,
+				CapacityObservedAt: observed, Ready: true,
+			}},
+		}
+
+		return c.Status().Patch(ctx, current, patch)
+	}
+	if err := refresh(); err != nil {
+		t.Fatalf("publish sanity StorageNode status: %v", err)
+	}
+
+	go func() {
+		ticker := time.NewTicker(inventory.FreshnessTimeout / 3)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = refresh()
+			}
+		}
+	}()
 }
 
 type nopKeyProvider struct{}

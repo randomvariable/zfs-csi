@@ -8,9 +8,9 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.43.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.34
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.318.1
-	github.com/container-storage-interface/spec v1.12.0
+	github.com/container-storage-interface/spec v1.13.0
 	github.com/go-logr/logr v1.4.4
-	github.com/kubernetes-csi/csi-test/v5 v5.5.0
+	github.com/kubernetes-csi/csi-test/v5 v5.5.1-0.20260804174631-d41e43d377e6
 	github.com/magefile/mage v1.17.2
 	github.com/moby/moby/api v1.55.0
 	github.com/onsi/ginkgo/v2 v2.32.0
@@ -139,7 +139,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
-	go.uber.org/mock v0.5.2 // indirect
+	go.uber.org/mock v0.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect

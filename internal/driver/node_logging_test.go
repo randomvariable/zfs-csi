@@ -37,10 +37,11 @@ func TestNodePublishUnpublishAndExpandLogOperations(t *testing.T) {
 	mounter := &recordingMountOps{}
 	server := newLoggingTestNode(logSink, mounter)
 	volumeID := testVolumeID(t, zfs.KindBlock)
+	staging := t.TempDir()
 
 	if _, err := server.NodePublishVolume(ctx, &csi.NodePublishVolumeRequest{
 		VolumeId:          volumeID,
-		StagingTargetPath: "/stage/vol",
+		StagingTargetPath: staging,
 		TargetPath:        t.TempDir() + "/mount",
 		Readonly:          true,
 	}); err != nil {
@@ -51,13 +52,13 @@ func TestNodePublishUnpublishAndExpandLogOperations(t *testing.T) {
 		t.Fatalf("NodeUnpublishVolume returned error: %v", err)
 	}
 
-	if _, err := server.NodeExpandVolume(ctx, &csi.NodeExpandVolumeRequest{VolumeId: volumeID, VolumePath: "/stage/vol"}); err != nil {
+	if _, err := server.NodeExpandVolume(ctx, &csi.NodeExpandVolumeRequest{VolumeId: volumeID, VolumePath: staging}); err != nil {
 		t.Fatalf("NodeExpandVolume returned error: %v", err)
 	}
 
-	logSink.requireInfo(t, logging.OpBindMount).requireValues(t, logging.KeyVolumeID, volumeID, logging.KeySource, "/stage/vol", logging.KeyReadonly, true)
+	logSink.requireInfo(t, logging.OpBindMount).requireValues(t, logging.KeyVolumeID, volumeID, logging.KeySource, staging, logging.KeyReadonly, true)
 	logSink.requireInfo(t, logging.OpUnmountTarget).requireValues(t, logging.KeyVolumeID, volumeID, logging.KeyTarget, "/pod/target")
-	logSink.requireInfo(t, logging.OpResize).requireValues(t, logging.KeyVolumeID, volumeID, logging.KeyTarget, "/stage/vol", logging.KeyFsType, defaultBlockFsType)
+	logSink.requireInfo(t, logging.OpResize).requireValues(t, logging.KeyVolumeID, volumeID, logging.KeyTarget, staging, logging.KeyFsType, defaultBlockFsType)
 
 	if !mounter.bound || !mounter.unmounted || !mounter.resized {
 		t.Fatalf("expected bind/unmount/resize to run, got bound=%t unmounted=%t resized=%t", mounter.bound, mounter.unmounted, mounter.resized)
@@ -82,9 +83,6 @@ func TestNodeGetVolumeStatsReturnsByteAndInodeUsage(t *testing.T) {
 
 	assertVolumeUsage(t, resp.GetUsage()[0], csi.VolumeUsage_BYTES)
 	assertVolumeUsage(t, resp.GetUsage()[1], csi.VolumeUsage_INODES)
-	if cond := resp.GetVolumeCondition(); cond == nil || cond.GetAbnormal() {
-		t.Fatalf("volume condition = %#v, want normal", cond)
-	}
 }
 
 func TestNodeGetVolumeStatsValidatesRequiredFields(t *testing.T) {

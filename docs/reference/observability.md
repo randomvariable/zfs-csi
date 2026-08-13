@@ -55,6 +55,11 @@ The controller Deployment includes the CSI external health-monitor controller, w
 volume health conditions. It serves its own HTTP endpoint on `:8081` within the controller
 pod.
 
+CSI 1.13 (KEP-1432) removed the `VOLUME_CONDITION` capability in favour of the
+`ControllerGetVolumeHealth` / `NodeGetVolumeHealth` RPCs. The released sidecar (v0.18.0) still
+requires the removed capability and exits against a v1.13 driver, so the chart pins the
+staging build by digest until an upstream release ships the new RPCs.
+
 ## See Also
 
 - [Command-Line Reference](command-line.md) (reference)

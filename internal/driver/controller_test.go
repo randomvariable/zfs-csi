@@ -71,6 +71,25 @@ func newTestClient(t *testing.T, objs ...crclient.Object) crclient.Client {
 	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).WithStatusSubresource(&zfscsiv1.Volume{}, &zfscsiv1.Snapshot{}).Build()
 }
 
+// mustCreateNode registers a cluster Node. ControllerPublishVolume refuses to
+// attach to a node that does not exist, so publish tests must declare theirs.
+func mustCreateNode(t *testing.T, c crclient.Client, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		if err := c.Create(context.Background(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+			t.Fatalf("create node %q: %v", name, err)
+		}
+	}
+}
+
+// blockPublishCap is the capability a block publish request carries.
+func blockPublishCap() *csi.VolumeCapability {
+	return &csi.VolumeCapability{
+		AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+	}
+}
+
 func capacityConfigMap(node string, data map[string]string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1800,10 +1819,11 @@ func TestControllerPublish_BlockMapsInitiator(t *testing.T) {
 	}
 
 	mustSetReady(t, c, "pub")
+	mustCreateNode(t, c, "worker1")
 	go autoConfirmPublish(t, c, "pub", "worker1")
 
 	resp, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
-		VolumeId: "csi:tank:block:pub", NodeId: "worker1",
+		VolumeId: "csi:tank:block:pub", NodeId: "worker1", VolumeCapability: blockPublishCap(),
 	})
 	if err != nil {
 		t.Fatalf("publish: %v", err)
@@ -1838,11 +1858,12 @@ func TestControllerPublish_WaitsForConfirmedMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustSetReady(t, c, "wait-pub")
+	mustCreateNode(t, c, "worker1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	_, err := cs.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
-		VolumeId: "csi:tank:block:wait-pub", NodeId: "worker1",
+		VolumeId: "csi:tank:block:wait-pub", NodeId: "worker1", VolumeCapability: blockPublishCap(),
 	})
 	if status.Code(err) != codes.DeadlineExceeded {
 		t.Fatalf("publish error code = %v, want %v (err=%v)", status.Code(err), codes.DeadlineExceeded, err)
@@ -1867,6 +1888,7 @@ func TestControllerPublish_SingleNodeWriterEvictsPriorInitiator(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustSetReady(t, c, "rwo")
+	mustCreateNode(t, c, "node-A", "node-B")
 	go autoConfirmPublish(t, c, "rwo", "node-B")
 
 	_, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
@@ -1907,10 +1929,11 @@ func TestControllerPublish_ReturnsMaterializedPublishContext(t *testing.T) {
 	if err := c.Create(context.Background(), v); err != nil {
 		t.Fatal(err)
 	}
+	mustCreateNode(t, c, "worker1")
 	go autoConfirmPublish(t, c, "ctx", "worker1")
 
 	resp, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
-		VolumeId: "csi:tank:block:ctx", NodeId: "worker1",
+		VolumeId: "csi:tank:block:ctx", NodeId: "worker1", VolumeCapability: blockPublishCap(),
 	})
 	if err != nil {
 		t.Fatalf("publish: %v", err)
@@ -1933,7 +1956,8 @@ func TestControllerPublish_FilesystemIncludesObservedExportPath(t *testing.T) {
 	if err := c.Create(context.Background(), v); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{VolumeId: v.Spec.VolumeID, NodeId: "worker1"})
+	mustCreateNode(t, c, "worker1")
+	resp, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{VolumeId: v.Spec.VolumeID, NodeId: "worker1", VolumeCapability: blockPublishCap()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1978,7 +2002,8 @@ func TestControllerPublishRejectsStaleImportedValidation(t *testing.T) {
 	if err := c.Create(context.Background(), v); err != nil {
 		t.Fatal(err)
 	}
-	_, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{VolumeId: v.Spec.VolumeID, NodeId: "worker1"})
+	mustCreateNode(t, c, "worker1")
+	_, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{VolumeId: v.Spec.VolumeID, NodeId: "worker1", VolumeCapability: blockPublishCap()})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("publish error = %v", err)
 	}
@@ -2089,7 +2114,7 @@ func TestControllerPublish_FilesystemDoesNotEvictInitiators(t *testing.T) {
 	if err := c.Create(context.Background(), v); err != nil {
 		t.Fatal(err)
 	}
-
+	mustCreateNode(t, c, "node-A", "node-B")
 	_, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
 		VolumeId: "csi:tank:filesystem:fs",
 		NodeId:   "node-B",
@@ -2509,10 +2534,10 @@ func TestConformanceVolumeAttributesClassUsesSupportedMutableParameters(t *testi
 	}
 }
 
-// TestControllerGetVolume_ReportsHealthCondition proves ControllerGetVolume
-// returns a VolumeCondition derived from the Volume CR state: Ready=healthy,
-// Error=abnormal (with the reason).
-func TestControllerGetVolume_ReportsHealthCondition(t *testing.T) {
+// TestControllerGetVolumeHealth_ReportsHealthStatus proves ControllerGetVolumeHealth
+// derives health from the Volume CR state: Ready reports no adverse status,
+// Error reports an entry carrying the failure reason.
+func TestControllerGetVolumeHealth_ReportsHealthStatus(t *testing.T) {
 	c := newTestClient(t)
 	cs := newTestController(c)
 
@@ -2540,24 +2565,27 @@ func TestControllerGetVolume_ReportsHealthCondition(t *testing.T) {
 	mkVol("healthy", "csi:tank:block:healthy", zfscsiv1.VolumeStateReady, "")
 	mkVol("sick", "csi:tank:block:sick", zfscsiv1.VolumeStateError, "zfs create: pool full")
 
-	resp, err := cs.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{VolumeId: "csi:tank:block:healthy"})
+	resp, err := cs.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{VolumeId: "csi:tank:block:healthy"})
 	if err != nil {
 		t.Fatalf("get healthy: %v", err)
 	}
-	if resp.GetStatus().GetVolumeCondition().GetAbnormal() {
-		t.Fatal("Ready volume should report healthy (abnormal=false)")
+	if got := resp.GetVolumeHealth(); got.GetVolumeId() != "csi:tank:block:healthy" || len(got.GetHealthStatuses()) != 0 {
+		t.Fatalf("Ready volume health = %#v, want no adverse status", got)
 	}
 
-	resp, err = cs.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{VolumeId: "csi:tank:block:sick"})
+	resp, err = cs.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{VolumeId: "csi:tank:block:sick"})
 	if err != nil {
 		t.Fatalf("get sick: %v", err)
 	}
-	cond := resp.GetStatus().GetVolumeCondition()
-	if !cond.GetAbnormal() {
-		t.Fatal("Error volume should report abnormal")
+	statuses := resp.GetVolumeHealth().GetHealthStatuses()
+	if len(statuses) != 1 {
+		t.Fatalf("Error volume health = %#v, want one adverse status", statuses)
 	}
-	if cond.GetMessage() != "zfs create: pool full" {
-		t.Fatalf("abnormal message = %q, want the Error condition reason", cond.GetMessage())
+	if statuses[0].GetStatus() != csi.VolumeHealthErrorType_INACCESSIBLE {
+		t.Fatalf("status = %s, want INACCESSIBLE", statuses[0].GetStatus())
+	}
+	if statuses[0].GetMessage() != "zfs create: pool full" {
+		t.Fatalf("message = %q, want the Error condition reason", statuses[0].GetMessage())
 	}
 }
 
@@ -2581,20 +2609,51 @@ func TestControllerHealthUsesPersistedBackendCondition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	get, err := cs.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{VolumeId: v.Spec.VolumeID})
+	get, err := cs.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{VolumeId: v.Spec.VolumeID})
 	if err != nil {
-		t.Fatalf("ControllerGetVolume: %v", err)
+		t.Fatalf("ControllerGetVolumeHealth: %v", err)
 	}
-	if !get.GetStatus().GetVolumeCondition().GetAbnormal() || get.GetStatus().GetVolumeCondition().GetMessage() != "repair target export: configfs unavailable" {
-		t.Fatalf("get health = %#v", get.GetStatus().GetVolumeCondition())
+	statuses := get.GetVolumeHealth().GetHealthStatuses()
+	if len(statuses) != 1 || statuses[0].GetMessage() != "repair target export: configfs unavailable" {
+		t.Fatalf("get health = %#v", statuses)
 	}
 
-	list, err := cs.ListVolumes(context.Background(), &csi.ListVolumesRequest{})
+	list, err := cs.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{})
 	if err != nil {
-		t.Fatalf("ListVolumes: %v", err)
+		t.Fatalf("ControllerListVolumeHealth: %v", err)
 	}
-	if len(list.Entries) != 1 || !list.Entries[0].GetStatus().GetVolumeCondition().GetAbnormal() {
-		t.Fatalf("list health = %#v", list.Entries)
+	if len(list.GetEntries()) != 1 || list.GetEntries()[0].GetVolumeId() != v.Spec.VolumeID {
+		t.Fatalf("list health = %#v", list.GetEntries())
+	}
+	if got := list.GetEntries()[0].GetHealthStatuses(); len(got) != 1 || got[0].GetReason() != "BackendUnhealthy" {
+		t.Fatalf("list health statuses = %#v", got)
+	}
+}
+
+// TestControllerListVolumeHealthOmitsHealthyVolumes proves the list RPC returns
+// only abnormal entries, so a CO does not treat healthy volumes as findings.
+func TestControllerListVolumeHealthOmitsHealthyVolumes(t *testing.T) {
+	c := newTestClient(t)
+	cs := newTestController(c)
+	v := &zfscsiv1.Volume{
+		ObjectMeta: metav1.ObjectMeta{Name: "healthy"},
+		Spec:       zfscsiv1.VolumeSpec{Pool: "tank", Type: zfscsiv1.VolumeTypeBlock, VolumeID: "csi:tank:block:healthy", Capacity: 1 << 30},
+	}
+	if err := c.Create(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	patch := crclient.MergeFrom(v.DeepCopy())
+	v.Status.State = zfscsiv1.VolumeStateReady
+	if err := c.Status().Patch(context.Background(), v, patch); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := cs.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{})
+	if err != nil {
+		t.Fatalf("ControllerListVolumeHealth: %v", err)
+	}
+	if len(list.GetEntries()) != 0 {
+		t.Fatalf("list health = %#v, want no entries for a healthy volume", list.GetEntries())
 	}
 }
 
@@ -2732,18 +2791,20 @@ func TestControllerGetCapabilities(t *testing.T) {
 		t.Fatal("MODIFY_VOLUME capability not advertised (VolumeAttributesClass)")
 	}
 
-	// Volume health monitoring: GET_VOLUME + VOLUME_CONDITION.
-	var haveGetVol, haveCond bool
+	// Volume health monitoring: GET_VOLUME + the CSI 1.13 health RPC pair.
+	var haveGetVol, haveGetHealth, haveListHealth bool
 	for _, c := range resp.GetCapabilities() {
 		switch c.GetRpc().GetType() {
 		case csi.ControllerServiceCapability_RPC_GET_VOLUME:
 			haveGetVol = true
-		case csi.ControllerServiceCapability_RPC_VOLUME_CONDITION:
-			haveCond = true
+		case csi.ControllerServiceCapability_RPC_GET_VOLUME_HEALTH:
+			haveGetHealth = true
+		case csi.ControllerServiceCapability_RPC_LIST_VOLUME_HEALTH:
+			haveListHealth = true
 		}
 	}
-	if !haveGetVol || !haveCond {
-		t.Fatalf("health caps missing: GET_VOLUME=%v VOLUME_CONDITION=%v", haveGetVol, haveCond)
+	if !haveGetVol || !haveGetHealth || !haveListHealth {
+		t.Fatalf("health caps missing: GET_VOLUME=%v GET_VOLUME_HEALTH=%v LIST_VOLUME_HEALTH=%v", haveGetVol, haveGetHealth, haveListHealth)
 	}
 }
 
@@ -3023,7 +3084,9 @@ func TestControllerPublishShortCallerDeadlineReturnsDeadlineExceeded(t *testing.
 		},
 		Status: zfscsiv1.VolumeStatus{State: zfscsiv1.VolumeStateReady},
 	}
-	cs := newTestController(newTestClient(t, vol))
+	c := newTestClient(t, vol)
+	cs := newTestController(c)
+	mustCreateNode(t, c, "node-a")
 	ctx, cancel := context.WithTimeout(context.Background(), pollDeadlineSafetyMargin/2)
 	defer cancel()
 

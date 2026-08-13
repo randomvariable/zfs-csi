@@ -156,6 +156,9 @@ func (n *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	if req.GetVolumeId() == "" || req.GetStagingTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id + staging_target_path required")
 	}
+	if req.GetVolumeCapability() == nil {
+		return nil, status.Error(codes.InvalidArgument, "volume_capability required")
+	}
 
 	p, err := naming.ParseVolID(req.GetVolumeId())
 	if err != nil {
@@ -291,11 +294,20 @@ func (n *NodeServer) unstageViaPlugin(ctx context.Context, req *csi.NodeUnstageV
 	unstageReq := &stagepb.NodeUnstageRequest{StagingPath: req.GetStagingTargetPath()}
 	if kind == zfs.KindBlock {
 		nvme, err := loadNVMeIdentity(req.GetStagingTargetPath())
-		if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			// Identity is persisted before attach, so its absence means this
+			// node never attached the namespace. NodeUnstageVolume must be
+			// idempotent, so unmount without a detach source rather than
+			// failing a caller that is retrying or unstaging an unstaged volume.
+		case err != nil:
+			// A present-but-unusable record is different: refusing here keeps a
+			// possibly-attached controller from being silently abandoned.
 			return nil, status.Errorf(codes.FailedPrecondition, "load authoritative NVMe target identity: %v", err)
+		default:
+			nvme.InitiatorId = n.nodeID
+			unstageReq.Source = &stagepb.NodeUnstageRequest_Nvme{Nvme: nvme}
 		}
-		nvme.InitiatorId = n.nodeID
-		unstageReq.Source = &stagepb.NodeUnstageRequest_Nvme{Nvme: nvme}
 	}
 
 	unstageLog := logging.LogWith(n.log, logging.OpUnmountStaging,
@@ -319,6 +331,9 @@ func (n *NodeServer) unstageViaPlugin(ctx context.Context, req *csi.NodeUnstageV
 
 // NodeUnstageVolume unmounts + detaches.
 func (n *NodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume_id required")
+	}
 	if req.GetStagingTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "staging_target_path required")
 	}
@@ -406,6 +421,14 @@ func (n *NodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVo
 	}
 
 	volPath := req.GetVolumePath()
+	// A volume_path that does not exist on this node names no staged volume.
+	if _, err := os.Stat(volPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, status.Errorf(codes.NotFound, "volume path not found: %v", err)
+		}
+
+		return nil, status.Errorf(codes.Internal, "stat volume path: %v", err)
+	}
 	requested := req.GetCapacityRange().GetRequiredBytes()
 
 	// The controller already grew the zvol AND revalidated the target-side nvmet
@@ -489,68 +512,110 @@ func (n *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVol
 	if isBlockVolumePath(req.GetVolumePath()) {
 		total, err := blockDeviceSize(req.GetVolumePath())
 		if err != nil {
-			// F9: a vanished device node (e.g. the NVMe controller was deleted
-			// after ctrl_loss_tmo, or the target went away) is precisely the
-			// abnormal condition the health channel exists to surface. Report it
-			// as Abnormal on a SUCCESSFUL RPC rather than a NotFound/Internal
-			// error, so the external health monitor sees it.
 			if os.IsNotExist(err) {
-				return abnormalStats(0, "block device missing: "+err.Error()), nil
+				return nil, status.Errorf(codes.NotFound, "block device missing: %v", err)
 			}
 
 			return nil, status.Errorf(codes.Internal, "block size: %v", err)
 		}
 
-		// F9: even when the device node exists and BLKGETSIZE64 succeeds, the NVMe
-		// controller behind it may be in a non-live state (connecting, resetting,
-		// deleting) — report that as abnormal.
-		if abnormal, msg := blockPathAbnormal(sysBlockRoot, req.GetVolumePath()); abnormal {
-			return abnormalStats(total, msg), nil
-		}
-
 		return &csi.NodeGetVolumeStatsResponse{
-			Usage:           []*csi.VolumeUsage{{Total: total, Unit: csi.VolumeUsage_BYTES}},
-			VolumeCondition: &csi.VolumeCondition{Abnormal: false, Message: "ok"},
+			Usage: []*csi.VolumeUsage{{Total: total, Unit: csi.VolumeUsage_BYTES}},
 		}, nil
 	}
 
 	// Filesystem: statfs a hard NFS mount whose server is gone blocks forever.
 	// Run it under a bounded deadline with a per-path dedup guard (only one
-	// outstanding probe per path) so a hung mount reports Abnormal instead of
-	// wedging the RPC and leaking a goroutine on every kubelet stats poll.
+	// outstanding probe per path) so a hung mount fails fast instead of wedging
+	// the RPC and leaking a goroutine on every kubelet stats poll. The health
+	// channel proper is NodeGetVolumeHealth.
 	usage, err := n.volumeUsageBounded(ctx, req.GetVolumePath())
 	if err != nil {
 		switch {
 		case os.IsNotExist(err):
 			return nil, status.Errorf(codes.NotFound, "volume path not found: %v", err)
 		case errors.Is(err, errStatfsTimeout):
-			return abnormalStats(0, "stat timeout (mount unresponsive)"), nil
+			return nil, status.Error(codes.Unavailable, "stat timeout (mount unresponsive)")
 		case errors.Is(err, syscall.EIO), errors.Is(err, syscall.ESTALE):
-			return abnormalStats(0, "stat failed: "+err.Error()), nil
+			return nil, status.Errorf(codes.Unavailable, "stat failed: %v", err)
 		default:
 			return nil, status.Errorf(codes.Internal, "statfs volume path: %v", err)
 		}
 	}
 
-	return &csi.NodeGetVolumeStatsResponse{
-		Usage:           usage,
-		VolumeCondition: &csi.VolumeCondition{Abnormal: false, Message: "ok"},
-	}, nil
+	return &csi.NodeGetVolumeStatsResponse{Usage: usage}, nil
 }
 
-// abnormalStats builds a successful NodeGetVolumeStats response that flags the
-// volume as abnormal (the CSI health-monitor channel). total may be 0 when the
-// size is unknown.
-func abnormalStats(total int64, msg string) *csi.NodeGetVolumeStatsResponse {
-	usage := []*csi.VolumeUsage{}
-	if total > 0 {
-		usage = append(usage, &csi.VolumeUsage{Total: total, Unit: csi.VolumeUsage_BYTES})
+// NodeGetVolumeHealth reports this node's view of a staged/published volume
+// (CSI 1.13 replaces the removed VolumeCondition field on NodeGetVolumeStats
+// with this RPC). An empty status list means no adverse condition is known.
+func (n *NodeServer) NodeGetVolumeHealth(ctx context.Context, req *csi.NodeGetVolumeHealthRequest) (*csi.NodeGetVolumeHealthResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume_id required")
 	}
 
-	return &csi.NodeGetVolumeStatsResponse{
-		Usage:           usage,
-		VolumeCondition: &csi.VolumeCondition{Abnormal: true, Message: msg},
+	health := &csi.VolumeHealth{VolumeId: req.GetVolumeId()}
+	// The published path reflects what the workload actually sees; fall back to
+	// the staging path when the volume is staged but not yet published.
+	path := req.GetVolumePublishPath()
+	if path == "" {
+		path = req.GetStagingTargetPath()
 	}
+	if path == "" {
+		// No path to probe: the SP knows of no adverse condition.
+		return &csi.NodeGetVolumeHealthResponse{VolumeHealth: health}, nil
+	}
+
+	if entry := n.volumePathHealth(ctx, path); entry != nil {
+		health.HealthStatuses = []*csi.VolumeHealth_VolumeHealthEntry{entry}
+	}
+
+	return &csi.NodeGetVolumeHealthResponse{VolumeHealth: health}, nil
+}
+
+// volumePathHealth probes a staged/published path and returns the adverse
+// condition found, or nil when the path is healthy.
+func (n *NodeServer) volumePathHealth(ctx context.Context, path string) *csi.VolumeHealth_VolumeHealthEntry {
+	unhealthy := func(kind csi.VolumeHealthErrorType, reason, msg string) *csi.VolumeHealth_VolumeHealthEntry {
+		return &csi.VolumeHealth_VolumeHealthEntry{Status: kind, Reason: reason, Message: msg}
+	}
+
+	if isBlockVolumePath(path) {
+		if _, err := blockDeviceSize(path); err != nil {
+			// A vanished device node (e.g. the NVMe controller was deleted after
+			// ctrl_loss_tmo, or the target went away) is precisely the condition
+			// the health channel exists to surface.
+			if os.IsNotExist(err) {
+				return unhealthy(csi.VolumeHealthErrorType_INACCESSIBLE, "BlockDeviceMissing", "block device missing: "+err.Error())
+			}
+
+			return unhealthy(csi.VolumeHealthErrorType_DEGRADED, "BlockSizeUnavailable", "block size: "+err.Error())
+		}
+
+		// Even when the device node exists and BLKGETSIZE64 succeeds, the NVMe
+		// controller behind it may be in a non-live state (connecting, resetting,
+		// deleting).
+		if abnormal, msg := blockPathAbnormal(sysBlockRoot, path); abnormal {
+			return unhealthy(csi.VolumeHealthErrorType_DEGRADED, "ControllerNotLive", msg)
+		}
+
+		return nil
+	}
+
+	if _, err := n.volumeUsageBounded(ctx, path); err != nil {
+		switch {
+		case os.IsNotExist(err):
+			return unhealthy(csi.VolumeHealthErrorType_INACCESSIBLE, "VolumePathMissing", "volume path not found: "+err.Error())
+		case errors.Is(err, errStatfsTimeout):
+			return unhealthy(csi.VolumeHealthErrorType_INACCESSIBLE, "MountUnresponsive", "stat timeout (mount unresponsive)")
+		case errors.Is(err, syscall.EIO), errors.Is(err, syscall.ESTALE):
+			return unhealthy(csi.VolumeHealthErrorType_INACCESSIBLE, "StatFailed", "stat failed: "+err.Error())
+		default:
+			return unhealthy(csi.VolumeHealthErrorType_DEGRADED, "StatError", "statfs volume path: "+err.Error())
+		}
+	}
+
+	return nil
 }
 
 // --- helpers ---

@@ -25,7 +25,7 @@ not run OpenZFS; they attach volumes over NVMe-TCP and NFS.
 | Component | Version |
 | --- | --- |
 | Kubernetes | 1.36 minimum; developed and tested against 1.36 |
-| CSI specification | 1.12.0 |
+| CSI specification | 1.13.0 |
 
 The driver requires Kubernetes 1.36 or later. It uses recent CSI sidecar releases (for example
 `csi-provisioner` v6.3.0 and `csi-snapshotter` v8.2.0). Earlier releases are not tested.

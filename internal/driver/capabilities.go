@@ -15,7 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package driver implements the CSI Identity, Controller, and Node gRPC
-// services (CSI spec v1.12.0) on top of the controller-runtime client (the
+// services (CSI spec v1.13.0) on top of the controller-runtime client (the
 // controller) and the transport + mount surfaces (the node plugin).
 //
 // The controller is a pure CR writer — it translates CSI intent into
@@ -79,12 +79,14 @@ func controllerCapabilities() []*csi.ControllerServiceCapability {
 		// external-resizer drives the RPC. The agent applies the change via
 		// `zfs set` in its level-triggered reconcile.
 		mk(csi.ControllerServiceCapability_RPC_MODIFY_VOLUME),
-		// Volume health monitoring: GET_VOLUME lets the external-health-monitor
-		// query per-volume condition; VOLUME_CONDITION signals that
-		// ControllerGetVolume populates VolumeStatus.VolumeCondition (derived from
-		// the Volume CR reconcile state).
+		// Volume health monitoring: GET_VOLUME lets a CO fetch per-volume
+		// state, and the GET/LIST_VOLUME_HEALTH pair (CSI 1.13, replacing the
+		// removed VOLUME_CONDITION capability) serves the external-health-
+		// monitor from the Volume CR reconcile state. LIST_VOLUME_HEALTH
+		// requires GET_VOLUME_HEALTH per the spec.
 		mk(csi.ControllerServiceCapability_RPC_GET_VOLUME),
-		mk(csi.ControllerServiceCapability_RPC_VOLUME_CONDITION),
+		mk(csi.ControllerServiceCapability_RPC_GET_VOLUME_HEALTH),
+		mk(csi.ControllerServiceCapability_RPC_LIST_VOLUME_HEALTH),
 	}
 }
 
@@ -100,9 +102,9 @@ func nodeCapabilities() []*csi.NodeServiceCapability {
 		mk(csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME),
 		mk(csi.NodeServiceCapability_RPC_EXPAND_VOLUME),
 		mk(csi.NodeServiceCapability_RPC_GET_VOLUME_STATS),
-		// NodeGetVolumeStats populates VolumeCondition (mount liveness), so the
-		// node advertises VOLUME_CONDITION for the external-health-monitor.
-		mk(csi.NodeServiceCapability_RPC_VOLUME_CONDITION),
+		// NodeGetVolumeHealth reports mount/device liveness from this node's
+		// perspective (CSI 1.13, replacing the removed VOLUME_CONDITION).
+		mk(csi.NodeServiceCapability_RPC_GET_VOLUME_HEALTH),
 	}
 }
 

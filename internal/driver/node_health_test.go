@@ -23,6 +23,12 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/randomvariable/zfs-csi/internal/zfs"
 )
 
 // F9: blockPathAbnormal flags a non-live NVMe controller state as abnormal, and
@@ -105,4 +111,73 @@ func TestVolumeUsageBounded_TimeoutAndDedup(t *testing.T) {
 		t.Fatal("beginProbe should succeed after endProbe")
 	}
 	n.endProbe(path)
+}
+
+// NodeGetVolumeHealth is the CSI 1.13 health channel that replaced the removed
+// VolumeCondition field: a live path reports no adverse status, a vanished one
+// reports INACCESSIBLE, and a stuck mount reports the unresponsive probe rather
+// than wedging the RPC.
+func TestNodeGetVolumeHealth(t *testing.T) {
+	n := newLoggingTestNode(&recordingLogSink{}, &recordingMountOps{})
+	volumeID := testVolumeID(t, zfs.KindFilesystem)
+
+	healthy, err := n.NodeGetVolumeHealth(context.Background(), &csi.NodeGetVolumeHealthRequest{
+		VolumeId:          volumeID,
+		VolumePublishPath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("healthy path: %v", err)
+	}
+	if got := healthy.GetVolumeHealth(); got.GetVolumeId() != volumeID || len(got.GetHealthStatuses()) != 0 {
+		t.Fatalf("healthy path health = %#v, want no adverse status", got)
+	}
+
+	missing, err := n.NodeGetVolumeHealth(context.Background(), &csi.NodeGetVolumeHealthRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: filepath.Join(t.TempDir(), "gone"),
+	})
+	if err != nil {
+		t.Fatalf("missing path: %v", err)
+	}
+	statuses := missing.GetVolumeHealth().GetHealthStatuses()
+	if len(statuses) != 1 || statuses[0].GetStatus() != csi.VolumeHealthErrorType_INACCESSIBLE ||
+		statuses[0].GetReason() != "VolumePathMissing" {
+		t.Fatalf("missing path health = %#v, want INACCESSIBLE/VolumePathMissing", statuses)
+	}
+
+	const hung = "/mnt/hung-health"
+	if !n.beginProbe(hung) {
+		t.Fatal("beginProbe should succeed")
+	}
+	defer n.endProbe(hung)
+	stuck, err := n.NodeGetVolumeHealth(context.Background(), &csi.NodeGetVolumeHealthRequest{
+		VolumeId:          volumeID,
+		VolumePublishPath: hung,
+	})
+	if err != nil {
+		t.Fatalf("hung mount: %v", err)
+	}
+	statuses = stuck.GetVolumeHealth().GetHealthStatuses()
+	if len(statuses) != 1 || statuses[0].GetReason() != "MountUnresponsive" {
+		t.Fatalf("hung mount health = %#v, want MountUnresponsive", statuses)
+	}
+}
+
+// A volume with no published or staged path yields a health report the CO can
+// consume rather than an error.
+func TestNodeGetVolumeHealthWithoutPathReportsNoAdverseStatus(t *testing.T) {
+	n := newLoggingTestNode(&recordingLogSink{}, &recordingMountOps{})
+	volumeID := testVolumeID(t, zfs.KindBlock)
+
+	resp, err := n.NodeGetVolumeHealth(context.Background(), &csi.NodeGetVolumeHealthRequest{VolumeId: volumeID})
+	if err != nil {
+		t.Fatalf("NodeGetVolumeHealth: %v", err)
+	}
+	if got := resp.GetVolumeHealth(); got.GetVolumeId() != volumeID || len(got.GetHealthStatuses()) != 0 {
+		t.Fatalf("health = %#v, want no adverse status", got)
+	}
+
+	if _, err := n.NodeGetVolumeHealth(context.Background(), &csi.NodeGetVolumeHealthRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("missing volume_id error = %v, want InvalidArgument", err)
+	}
 }

@@ -204,7 +204,11 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: csi-external-health-monitor-controller
-          image: registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.15.0
+          # KEP-1432: CSI 1.13 removed VOLUME_CONDITION in favour of the
+          # Controller/NodeGetVolumeHealth RPCs. Released v0.18.0 still gates on
+          # the removed capability and exits against a v1.13 driver, so pin the
+          # staging build (v0.18.0-37-g8e7d7537) by digest until the next tag.
+          image: gcr.io/k8s-staging-sig-storage/csi-external-health-monitor-controller@sha256:6825ef89302c602416aa125b99a021c0323b5bc40f56ada8de00f699ecbe3aca
           args:
             - "--csi-address=/csi/csi.sock"
             - "--leader-election={{ gt $replicas 1 }}"
