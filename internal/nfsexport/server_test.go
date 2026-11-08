@@ -177,6 +177,36 @@ func TestChannelWriterInvalidateToleratesNegativeParserENOENTOnAllChannels(t *te
 	}
 }
 
+func TestChannelWriterInvalidateRootToleratesNegativeParserENOENT(t *testing.T) {
+	old := writeCache
+	t.Cleanup(func() { writeCache = old })
+	var ops []string
+	writeCache = func(ch Channel, line string) error {
+		ops = append(ops, channelFile[ch])
+		return &cacheWriteError{channel: ch, phase: cacheWriteBody, err: unix.ENOENT}
+	}
+	if err := NewChannelWriter(nil).InvalidateRoot("/flash"); err != nil {
+		t.Fatalf("InvalidateRoot with parser ENOENT: %v", err)
+	}
+	if got, want := strings.Join(ops, ","), channelFile[ChannelExport]+","+channelFile[ChannelExpKey]; got != want {
+		t.Fatalf("writes = %s, want %s", got, want)
+	}
+}
+
+func TestChannelWriterInvalidateRootFailsWhenChannelMissing(t *testing.T) {
+	old := writeCache
+	t.Cleanup(func() { writeCache = old })
+	writeCache = func(ch Channel, _ string) error {
+		if ch == ChannelExpKey {
+			return &cacheWriteError{channel: ch, phase: cacheWriteOpen, err: unix.ENOENT}
+		}
+		return nil
+	}
+	if err := NewChannelWriter(nil).InvalidateRoot("/flash"); !errors.Is(err, unix.ENOENT) {
+		t.Fatalf("InvalidateRoot error = %v, want channel-open ENOENT", err)
+	}
+}
+
 func TestPositiveExportENOENTPropagates(t *testing.T) {
 	old := writeCache
 	t.Cleanup(func() { writeCache = old })

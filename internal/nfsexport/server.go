@@ -118,7 +118,12 @@ func (w *ChannelWriter) InvalidateRoot(root string) error {
 	if err := writeExportCache(Entry{}, root, exp, true); err != nil {
 		return err
 	}
-	return writeCache(ChannelExpKey, marshalExpKeyAnswer("*", fsidTypeNum, []byte{0, 0, 0, 0}, exp, "", true))
+	// Same as InvalidateEntry: expkey_parse answers a negative entry with
+	// ENOENT when nothing is cached for it, which is the desired end state.
+	if err := writeCache(ChannelExpKey, marshalExpKeyAnswer("*", fsidTypeNum, []byte{0, 0, 0, 0}, exp, "", true)); err != nil && !isNegativeParserENOENT(err, true) {
+		return err
+	}
+	return nil
 }
 
 var writeCache = func(ch Channel, line string) error {
