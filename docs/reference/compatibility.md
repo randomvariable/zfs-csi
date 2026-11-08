@@ -75,6 +75,14 @@ volumes require an NFS version 4 client (`nfs-common` or equivalent).
 | `nfs-kernel-server` | Provides the kernel nfsd support files and procfs interface that the storage agent drives directly. |
 | `nvme-keyring` kernel module | Holds NVMe-TCP TLS pre-shared keys (transport security only). |
 
+The storage agent disables NFSv4 delegated timestamps at startup so clients see restored
+mtimes. On kernels where the control exists, it is only reachable through
+`/sys/kernel/debug/nfsd/delegated_timestamps`. Kernel lockdown (`integrity` or
+`confidentiality`, for example under Secure Boot) denies debugfs, so the agent cannot change it.
+In that case the agent logs an error and serves NFS with delegated timestamps left on: tools
+that restore mtimes over NFS (`cp -p`, `rsync -t`, `tar -x`) may leave the delegated time
+instead. Without lockdown, a failure to disable the control stops the agent.
+
 ## Container Image Base
 
 The driver container image is based on Ubuntu 24.04 and is **not** distroless. The driver

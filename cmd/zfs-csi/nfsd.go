@@ -22,6 +22,7 @@ const (
 	nfsdVersions            = "-2 -3 +4 +4.1 +4.2"
 	debugFSPath             = "/sys/kernel/debug"
 	delegatedTimestampsPath = "/sys/kernel/debug/nfsd/delegated_timestamps"
+	lockdownPath            = "/sys/kernel/security/lockdown"
 )
 
 type nfsdProcFSOps struct {
@@ -154,6 +155,16 @@ func configureNFSDDelegatedTimestamps(log logr.Logger) error {
 			return nil
 		}
 	}
+	if errors.Is(err, os.ErrPermission) {
+		// Kernel lockdown (Secure Boot) denies debugfs, the only interface to
+		// this control since it stopped being a Kconfig option. Serving NFS
+		// with delegated timestamps left on is preferred over refusing to run;
+		// clients may see delegated rather than restored mtimes.
+		if mode, lerr := kernelLockdownMode(); lerr == nil && mode != "none" {
+			log.Error(err, "nfsd delegated timestamps cannot be disabled under kernel lockdown; NFS clients may not see restored mtimes", "lockdown", mode)
+			return nil
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -179,6 +190,21 @@ func configureNFSDDelegatedTimestamps(log logr.Logger) error {
 		return fmt.Errorf("delegated timestamps remains enabled after disable (readback %q)", readback)
 	}
 	return nil
+}
+
+// kernelLockdownMode returns the selected mode from securityfs, for example
+// "integrity" from "none [integrity] confidentiality".
+func kernelLockdownMode() (string, error) {
+	data, err := nfsdProcFS.ReadFile(lockdownPath)
+	if err != nil {
+		return "", err
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if strings.HasPrefix(field, "[") && strings.HasSuffix(field, "]") {
+			return strings.Trim(field, "[]"), nil
+		}
+	}
+	return "", fmt.Errorf("no selected mode in %s: %q", lockdownPath, strings.TrimSpace(string(data)))
 }
 
 func ensureDebugFSMounted() error {

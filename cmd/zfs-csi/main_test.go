@@ -267,6 +267,52 @@ func TestConfigureNFSDDelegatedTimestamps(t *testing.T) {
 	}
 }
 
+func TestConfigureNFSDDelegatedTimestampsUnderLockdown(t *testing.T) {
+	tests := []struct {
+		name     string
+		lockdown []byte
+		lockErr  error
+		wantErr  bool
+	}{
+		{name: "integrity lockdown proceeds", lockdown: []byte("none [integrity] confidentiality\n")},
+		{name: "confidentiality lockdown proceeds", lockdown: []byte("none integrity [confidentiality]\n")},
+		{name: "no lockdown fails closed", lockdown: []byte("[none] integrity confidentiality\n"), wantErr: true},
+		{name: "unreadable lockdown fails closed", lockErr: os.ErrNotExist, wantErr: true},
+		{name: "malformed lockdown fails closed", lockdown: []byte("none integrity\n"), wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := nfsdProcFS
+			t.Cleanup(func() { nfsdProcFS = old })
+			writes := 0
+			nfsdProcFS = nfsdProcFSOps{
+				ReadFile: func(name string) ([]byte, error) {
+					switch name {
+					case delegatedTimestampsPath:
+						return nil, syscall.EPERM
+					case lockdownPath:
+						return tc.lockdown, tc.lockErr
+					}
+					return nil, os.ErrNotExist
+				},
+				WriteFile: func(string, []byte, os.FileMode) error { writes++; return nil },
+				Mount:     func(string, string, string, uintptr, string) error { return nil },
+				MkdirAll:  func(string, os.FileMode) error { return nil },
+			}
+			err := configureNFSDDelegatedTimestamps(logr.Discard())
+			if tc.wantErr && (err == nil || !errors.Is(err, syscall.EPERM)) {
+				t.Fatalf("configureNFSDDelegatedTimestamps() error = %v, want EPERM", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("configureNFSDDelegatedTimestamps() error = %v", err)
+			}
+			if writes != 0 {
+				t.Fatalf("writes = %d, want 0", writes)
+			}
+		})
+	}
+}
+
 func TestConfigureNFSDDelegatedTimestampsFailsClosedWhenDebugFSMountFails(t *testing.T) {
 	old := nfsdProcFS
 	t.Cleanup(func() { nfsdProcFS = old })
