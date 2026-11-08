@@ -34,8 +34,12 @@ COPY --from=xx / /
 ARG TARGETPLATFORM
 ARG TARGETARCH
 ARG KTLS_UTILS_VERSION
+# libglib2.0-dev-bin is Multi-Arch: foreign and depends on python3:any. Install
+# the native copies first, otherwise xx-apt-get satisfies them with target-arch
+# python3, whose postinst cannot execute on the build platform.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git autoconf automake libtool make pkg-config \
+    libglib2.0-dev-bin python3 \
     && rm -rf /var/lib/apt/lists/*
 RUN xx-apt-get update && xx-apt-get install -y --no-install-recommends \
     libc6-dev libgnutls28-dev libkeyutils-dev libnl-3-dev libnl-genl-3-dev libglib2.0-dev gcc
