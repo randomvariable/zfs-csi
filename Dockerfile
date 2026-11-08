@@ -34,12 +34,14 @@ COPY --from=xx / /
 ARG TARGETPLATFORM
 ARG TARGETARCH
 ARG KTLS_UTILS_VERSION
-# libglib2.0-dev-bin is Multi-Arch: foreign and depends on python3:any. Install
-# the native copies first, otherwise xx-apt-get satisfies them with target-arch
-# python3, whose postinst cannot execute on the build platform.
+# libglib2.0-dev:<target> depends on python3:any, which native python3
+# satisfies, but apt's resolver still swaps it for target-arch python3 whose
+# postinst cannot execute on the build platform (no binfmt in CI). Install and
+# hold the native interpreter so the cross install keeps it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git autoconf automake libtool make pkg-config \
     libglib2.0-dev-bin python3 \
+    && apt-mark hold python3 python3-minimal python3.12 python3.12-minimal \
     && rm -rf /var/lib/apt/lists/*
 RUN xx-apt-get update && xx-apt-get install -y --no-install-recommends \
     libc6-dev libgnutls28-dev libkeyutils-dev libnl-3-dev libnl-genl-3-dev libglib2.0-dev gcc
