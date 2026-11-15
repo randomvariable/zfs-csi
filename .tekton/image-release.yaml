@@ -106,7 +106,13 @@ spec:
                   type: Unconfined
               computeResources:
                 requests:
-                  memory: 16Gi
+                  # The podTemplate above pins this task to server6, which now
+                  # also carries the control-plane workload: unrequested memory
+                  # there measured 9.8 GiB on 2026-11-15, so a 16 GiB request
+                  # left the build Pending on ExceededNodeResources while the
+                  # node had 88 GiB available. A request is only a scheduling
+                  # guarantee; the 56 GiB limit still bounds the build.
+                  memory: 8Gi
                   ephemeral-storage: 20Gi
                 limits:
                   memory: 56Gi
