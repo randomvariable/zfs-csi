@@ -662,7 +662,7 @@ func (c *NVMETClient) findDevice(ref TargetRef) (string, error) {
 			// form "nvme1n1" or, with NVMe multipath/ANA enabled (default on
 			// modern kernels), the per-controller form "nvme1c1n1" (a "c<N>"
 			// infix). head is "" for non-namespace entries (attr files, etc).
-			head := headNamespaceName(ctl, entry)
+			head := headNamespaceName(entry)
 			if head == "" {
 				continue
 			}
@@ -687,30 +687,42 @@ func (c *NVMETClient) findDevice(ref TargetRef) (string, error) {
 }
 
 // headNamespaceName maps a controller-relative sysfs namespace entry to its
-// head /dev name. For controller "nvme1": "nvme1n1" → "nvme1n1" and the
-// multipath per-controller form "nvme1c1n1" → "nvme1n1". Returns "" if entry is
-// not a namespace of ctl (e.g. an attribute file).
-func headNamespaceName(ctl, entry string) string {
-	if !strings.HasPrefix(entry, ctl) {
+// head /dev name. The kernel names a namespace after its SUBSYSTEM instance and
+// head index, not after the controller that reaches it, so the entry under
+// controller "nvme16" can be "nvme14c16n2" whose head node is /dev/nvme14n2 —
+// the "c<instance>" infix merely records which controller this path belongs to.
+// Deriving the head from the controller name instead rejects that path, and
+// attach fails with "nvme attach produced no device" on any node whose
+// controller and subsystem instance counters have drifted apart (routine after
+// controllers are deleted and re-added). Accepts both "nvme<sub>n<head>" and
+// "nvme<sub>c<ctl>n<head>"; the infix is dropped to recover the head name.
+// Returns "" for anything that is not a namespace entry (attribute files,
+// symlinks such as "device" or "subsystem").
+func headNamespaceName(entry string) string {
+	if !strings.HasPrefix(entry, "nvme") {
 		return ""
 	}
-	rest := entry[len(ctl):] // "n<nsid>" or "c<cnum>n<nsid>"
+	rest := entry[len("nvme"):] // "<sub>" then optional "c<ctl>", then "n<head>"
 	nIdx := strings.LastIndex(rest, "n")
-	if nIdx < 0 {
+	if nIdx <= 0 {
 		return ""
 	}
 	nsid := rest[nIdx+1:]
 	if !allDigits(nsid) {
 		return ""
 	}
-	if prefix := rest[:nIdx]; prefix != "" {
-		// only a "c<digits>" multipath infix is allowed before the "n"
-		if prefix[0] != 'c' || !allDigits(prefix[1:]) {
+	sub := rest[:nIdx] // "<sub>" or "<sub>c<ctl>"
+	if cIdx := strings.LastIndex(sub, "c"); cIdx >= 0 {
+		if !allDigits(sub[cIdx+1:]) {
 			return ""
 		}
+		sub = sub[:cIdx]
+	}
+	if !allDigits(sub) {
+		return ""
 	}
 
-	return ctl + "n" + nsid
+	return "nvme" + sub + "n" + nsid
 }
 
 func allDigits(s string) bool {

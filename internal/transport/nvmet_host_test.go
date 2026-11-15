@@ -104,6 +104,39 @@ func TestNVMETClientAttachMultipathNamespace(t *testing.T) {
 	}
 }
 
+// TestNVMETClientAttachDivergentSubsystemInstance covers the layout seen on a
+// node whose controller and subsystem instance counters have drifted apart: the
+// controller is nvme16 but its path carries the SUBSYSTEM instance (14) and the
+// head index (2), so the /dev node is nvme14n2. Deriving the head name from the
+// controller name finds no namespace and attach reports "produced no device"
+// even though the controller is live (server4 / comfyui home PVC, 2026-11-15).
+func TestNVMETClientAttachDivergentSubsystemInstance(t *testing.T) {
+	t.Parallel()
+
+	const targetNQN = "nqn.2026-01.csi.randomvariable:zfs:bac24e2afb117c2a109ad7ddbc2a50e0:block:pvc-88efb689-1453-477d-9ba2-e44aa9a54667"
+	fs := &fakeHostFS{files: map[string]string{
+		nvmeSysfsClass + "/nvme16/subsysnqn":         targetNQN + "\n",
+		nvmeSysfsClass + "/nvme16":                   "",
+		nvmeSysfsClass + "/nvme16/nvme14c16n2":       "",
+		nvmeSysfsClass + "/nvme16/nvme14c16n2/nguid": "52bf646b-488a-33fb-cb75-685ada4b9bb8\n",
+		// a second path on the same controller whose nguid is not ours
+		nvmeSysfsClass + "/nvme16/nvme16c16n1":       "",
+		nvmeSysfsClass + "/nvme16/nvme16c16n1/nguid": "00000000-0000-0000-0000-000000000000\n",
+	}}
+	c := NewNVMETClientWithHostFS(fs)
+
+	dev, err := c.Attach(context.Background(), TargetRef{
+		Kind: KindNVMeTCP, TargetNQN: targetNQN, Portal: "192.168.192.7:4421", TLS: true,
+		DeviceGUID: "52bf646b488a33fbcb75685ada4b9bb8",
+	}, "server4")
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if dev != "/dev/nvme14n2" {
+		t.Fatalf("device = %q, want /dev/nvme14n2 (head named after the subsystem instance)", dev)
+	}
+}
+
 func TestNVMETClientAttachConnectStringTunables(t *testing.T) {
 	t.Parallel()
 
