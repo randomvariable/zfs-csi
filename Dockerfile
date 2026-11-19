@@ -24,6 +24,10 @@ ARG XX_VERSION=1.6.1
 # predates NVMe-TCP PSK handshake support, so build a modern release from source.
 # Pin the latest stable tag; config lives at /etc/tlshd/config since 1.3.0.
 ARG KTLS_UTILS_VERSION=ktls-utils-1.3.1
+# archive.ubuntu.com and security.ubuntu.com sit behind one Cloudflare front end
+# that stalled every apt-get update for 12 minutes on 2026-11-19. Both Ubuntu
+# stages fetch from this mirror instead.
+ARG UBUNTU_MIRROR=http://mirrors.edge.kernel.org/ubuntu
 
 FROM --platform=$BUILDPLATFORM tonistiigi/xx:${XX_VERSION} AS xx
 
@@ -34,6 +38,8 @@ COPY --from=xx / /
 ARG TARGETPLATFORM
 ARG TARGETARCH
 ARG KTLS_UTILS_VERSION
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu/\?|${UBUNTU_MIRROR}/|; s|http://security.ubuntu.com/ubuntu/\?|${UBUNTU_MIRROR}/|" /etc/apt/sources.list.d/ubuntu.sources
 # libglib2.0-dev:<target> depends on python3:any, which native python3
 # satisfies, but apt's resolver still swaps it for target-arch python3 whose
 # postinst cannot execute on the build platform (no binfmt in CI). Install and
@@ -107,6 +113,8 @@ RUN CC=xx-clang \
 # 2.1->2.2 so the binary built against Debian's 2.1 headers loads the 2.2 runtime
 # library by soname without an ABI change.
 FROM ubuntu:24.04
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu/\?|${UBUNTU_MIRROR}/|; s|http://security.ubuntu.com/ubuntu/\?|${UBUNTU_MIRROR}/|" /etc/apt/sources.list.d/ubuntu.sources
 # nfs-kernel-server remains required for the kernel nfsd support and procfs
 # interface. The storage agent exclusively acquires, starts, and stops the
 # host-global kernel nfsd; host nfs-server/mountd ownership must be disabled or
