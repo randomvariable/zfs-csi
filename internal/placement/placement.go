@@ -84,7 +84,11 @@ func SelectCapacity(nodes []zfscsiv1.StorageNode, volumes []zfscsiv1.Volume, poo
 				if volume.Spec.OwnerNode != node.Name || volume.Spec.PoolGUID != pool.GUID || terminal(volume.Status.State) {
 					continue
 				}
-				if volume.Status.CapacityAccountedAt == nil || !volume.Status.CapacityAccountedAt.Time.Equal(pool.CapacityObservedAt.Time) {
+				// A marker at or before this sample stays valid: growth clears it and
+				// the dataset already existed at this capacity, so later samples include
+				// it too. Requiring equality made every volume count twice until the
+				// publisher re-stamped it after each sample.
+				if volume.Status.CapacityAccountedAt == nil || volume.Status.CapacityAccountedAt.Time.After(pool.CapacityObservedAt.Time) {
 					available = reserve(available, volume.Spec.Capacity)
 				}
 			}

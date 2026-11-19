@@ -104,6 +104,22 @@ func TestSelectFiltersAndReservationFormulaUsesSameClockMarker(t *testing.T) {
 	}
 }
 
+// A new pool sample lands before the publisher re-stamps owner Volumes. Their
+// previous-sample markers must still count as accounted, or thin-provisioned
+// pools whose summed volume sizes exceed free space drop out of placement.
+func TestSelectPreviousSampleMarkerStaysAccounted(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	node := storageNode("node-a", "1", "tank", 100, now)
+	previous := metav1.NewTime(now.Add(-30 * time.Second))
+	volumes := []zfscsiv1.Volume{
+		{Spec: zfscsiv1.VolumeSpec{OwnerNode: "node-a", PoolGUID: "1", Capacity: 150}, Status: zfscsiv1.VolumeStatus{CapacityAccountedAt: &previous}},
+	}
+	candidate, err := Select([]zfscsiv1.StorageNode{node}, volumes, "tank", 0, now, "", "", "workers")
+	if err != nil || candidate.Available != 100 {
+		t.Fatalf("candidate=%#v err=%v, want 100 bytes with previous-sample marker", candidate, err)
+	}
+}
+
 func TestSelectCapacityExpansionReservationSemantics(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	sample := metav1.NewTime(now)
