@@ -69,6 +69,7 @@ import (
 	"github.com/randomvariable/zfs-csi/internal/inventory"
 	"github.com/randomvariable/zfs-csi/internal/mount"
 	mountimpl "github.com/randomvariable/zfs-csi/internal/mount/impl"
+	"github.com/randomvariable/zfs-csi/internal/nfs"
 	"github.com/randomvariable/zfs-csi/internal/nfsexport"
 	"github.com/randomvariable/zfs-csi/internal/nvmet"
 	"github.com/randomvariable/zfs-csi/internal/observability"
@@ -90,6 +91,12 @@ const (
 	ModeNVMetStage = "nvmet-stage"
 	ModeNFSStage   = "nfs-stage"
 	ModeTLSSigner  = "tls-signer"
+	// ModeTLSHDCheck exits non-zero unless --tlshd-listeners daemons listen
+	// for kernel TLS handshakes in this network namespace.
+	ModeTLSHDCheck = "tlshd-check"
+	// ModeStorageOwnerNode prints true when this Node matches a storage
+	// owner's nodeSelector, and false otherwise.
+	ModeStorageOwnerNode = "storage-owner-node"
 
 	exitCodeUsage    = 2
 	grpcDrainTimeout = 5 * time.Second
@@ -99,7 +106,13 @@ const (
 )
 
 func main() {
-	mode := flag.String("mode", "", "operating mode: controller|storage|node|nvmet|nvmet-stage|nfs-stage|tls-signer")
+	mode := flag.String("mode", "", "operating mode: controller|storage|node|nvmet|nvmet-stage|nfs-stage|tls-signer|tlshd-check|storage-owner-node")
+	tlshdListeners := flag.Int("tlshd-listeners", 1, "tlshd daemons expected to listen for kernel TLS handshakes in this network namespace (tlshd-check mode)")
+	storageOwnerSelectors := flag.String(
+		"storage-owner-selectors",
+		"/etc/zfs-csi/storage-owner-selectors.json",
+		"JSON array of storage owner nodeSelectors (storage-owner-node mode)",
+	)
 	csiAddr := flag.String("csi-address", "/csi/csi.sock", "UNIX socket for CSI gRPC")
 	stageSocket := flag.String("stage-socket", "/stage/stage.sock", "UNIX socket for StagePlugin gRPC (server modes)")
 	nvmetStageSocket := flag.String(
@@ -282,6 +295,18 @@ func main() {
 			setupLog.Error(err, "TLS signer exited")
 			os.Exit(1)
 		}
+	case ModeTLSHDCheck:
+		if err := nfs.CheckHandshakeListeners(*tlshdListeners); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case ModeStorageOwnerNode:
+		owner, err := storageOwnerNode(ctx, os.Getenv("NODE_NAME"), *storageOwnerSelectors, inClusterNodeGetter{})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(owner)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode %q\n", *mode)
 		os.Exit(exitCodeUsage)

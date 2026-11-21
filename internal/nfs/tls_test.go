@@ -31,13 +31,15 @@ func TestEnsureTLSRuntimeFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		endpoint string
-		lookup   func(string) (uint16, error)
+		lookup   func(string) (genericNetlinkFamily, error)
 		wantErr  bool
 	}{
-		{name: "ready", endpoint: "192.0.2.10", lookup: func(string) (uint16, error) { return 42, nil }},
-		{name: "missing family", endpoint: "storage.example", lookup: func(string) (uint16, error) { return 0, errors.New("not found") }, wantErr: true},
-		{name: "invalid family ID", endpoint: "storage.example", lookup: func(string) (uint16, error) { return 0, nil }, wantErr: true},
-		{name: "empty endpoint", endpoint: "", lookup: func(string) (uint16, error) { return 42, nil }, wantErr: true},
+		{name: "ready", endpoint: "192.0.2.10", lookup: func(string) (genericNetlinkFamily, error) { return genericNetlinkFamily{id: 42}, nil }},
+		{name: "missing family", endpoint: "storage.example", lookup: func(string) (genericNetlinkFamily, error) {
+			return genericNetlinkFamily{}, errors.New("not found")
+		}, wantErr: true},
+		{name: "invalid family ID", endpoint: "storage.example", lookup: func(string) (genericNetlinkFamily, error) { return genericNetlinkFamily{}, nil }, wantErr: true},
+		{name: "empty endpoint", endpoint: "", lookup: func(string) (genericNetlinkFamily, error) { return genericNetlinkFamily{id: 42}, nil }, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lookupTLSHandshakeFamily = tc.lookup
@@ -70,8 +72,8 @@ func TestParseGenericNetlinkFamilyResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse family response: %v", err)
 	}
-	if got != familyID {
-		t.Fatalf("family ID = %d, want %d", got, familyID)
+	if got.id != familyID {
+		t.Fatalf("family ID = %d, want %d", got.id, familyID)
 	}
 }
 

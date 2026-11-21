@@ -17,6 +17,7 @@
 package nfs
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -46,38 +47,46 @@ func EnsureTLSRuntime(endpoint string) error {
 			return fmt.Errorf("invalid NFS endpoint %q", endpoint)
 		}
 	}
-	familyID, err := lookupTLSHandshakeFamily(handshakeNetlinkFamily)
+	family, err := lookupTLSHandshakeFamily(handshakeNetlinkFamily)
 	if err != nil {
 		return fmt.Errorf("look up generic-netlink family %q: %w", handshakeNetlinkFamily, err)
 	}
-	if familyID == 0 {
+	if family.id == 0 {
 		return fmt.Errorf("generic-netlink family %q returned invalid family ID 0", handshakeNetlinkFamily)
 	}
 
 	return nil
 }
 
-func lookupGenericNetlinkFamily(name string) (uint16, error) {
+// genericNetlinkFamily is a generic-netlink family as the kernel's nlctrl
+// controller reports it.
+type genericNetlinkFamily struct {
+	id uint16
+	// groups maps each multicast group name to its kernel-assigned group ID.
+	groups map[string]uint32
+}
+
+func lookupGenericNetlinkFamily(name string) (genericNetlinkFamily, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_GENERIC)
 	if err != nil {
-		return 0, fmt.Errorf("open generic-netlink socket: %w", err)
+		return genericNetlinkFamily{}, fmt.Errorf("open generic-netlink socket: %w", err)
 	}
 	defer unix.Close(fd)
 
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return 0, fmt.Errorf("bind generic-netlink socket: %w", err)
+		return genericNetlinkFamily{}, fmt.Errorf("bind generic-netlink socket: %w", err)
 	}
 
 	seq := netlinkSequence.Add(1)
 	request := genericNetlinkFamilyRequest(name, seq)
 	if err := unix.Sendto(fd, request, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return 0, fmt.Errorf("send family lookup: %w", err)
+		return genericNetlinkFamily{}, fmt.Errorf("send family lookup: %w", err)
 	}
 
-	buffer := make([]byte, 8192)
+	buffer := make([]byte, 32*1024)
 	n, _, err := unix.Recvfrom(fd, buffer, 0)
 	if err != nil {
-		return 0, fmt.Errorf("receive family lookup: %w", err)
+		return genericNetlinkFamily{}, fmt.Errorf("receive family lookup: %w", err)
 	}
 	return parseGenericNetlinkFamilyResponse(buffer[:n], seq)
 }
@@ -100,52 +109,103 @@ func genericNetlinkFamilyRequest(name string, seq uint32) []byte {
 	return message
 }
 
-func parseGenericNetlinkFamilyResponse(response []byte, seq uint32) (uint16, error) {
+func parseGenericNetlinkFamilyResponse(response []byte, seq uint32) (genericNetlinkFamily, error) {
 	for offset := 0; offset+unix.SizeofNlMsghdr <= len(response); {
 		messageLength := int(binary.NativeEndian.Uint32(response[offset : offset+4]))
 		if messageLength < unix.SizeofNlMsghdr || offset+messageLength > len(response) {
-			return 0, fmt.Errorf("malformed netlink response length %d", messageLength)
+			return genericNetlinkFamily{}, fmt.Errorf("malformed netlink response length %d", messageLength)
 		}
 		messageType := binary.NativeEndian.Uint16(response[offset+4 : offset+6])
 		messageSeq := binary.NativeEndian.Uint32(response[offset+8 : offset+12])
 		if messageSeq == seq {
 			payload := response[offset+unix.SizeofNlMsghdr : offset+messageLength]
 			if messageType == unix.NLMSG_ERROR {
-				if len(payload) < 4 {
-					return 0, fmt.Errorf("malformed netlink error response")
-				}
-				errno := int32(binary.NativeEndian.Uint32(payload[:4]))
-				if errno != 0 {
-					return 0, unix.Errno(-errno)
+				if err := netlinkError(payload); err != nil {
+					return genericNetlinkFamily{}, err
 				}
 			} else if messageType == unix.GENL_ID_CTRL {
-				return parseFamilyIDAttributes(payload)
+				return parseFamilyAttributes(payload)
 			}
 		}
 		offset += alignNetlink(messageLength)
 	}
-	return 0, fmt.Errorf("generic-netlink family response not found")
+	return genericNetlinkFamily{}, fmt.Errorf("generic-netlink family response not found")
 }
 
-func parseFamilyIDAttributes(payload []byte) (uint16, error) {
+func parseFamilyAttributes(payload []byte) (genericNetlinkFamily, error) {
 	if len(payload) < 4 {
-		return 0, fmt.Errorf("malformed generic-netlink response")
+		return genericNetlinkFamily{}, fmt.Errorf("malformed generic-netlink response")
 	}
-	for offset := 4; offset+4 <= len(payload); {
-		attributeLength := int(binary.NativeEndian.Uint16(payload[offset : offset+2]))
-		attributeType := binary.NativeEndian.Uint16(payload[offset+2:offset+4]) &^ unix.NLA_F_NESTED
-		if attributeLength < 4 || offset+attributeLength > len(payload) {
-			return 0, fmt.Errorf("malformed generic-netlink attribute length %d", attributeLength)
-		}
-		if attributeType == unix.CTRL_ATTR_FAMILY_ID {
-			if attributeLength < 6 {
-				return 0, fmt.Errorf("malformed family ID attribute")
+	family := genericNetlinkFamily{groups: map[string]uint32{}}
+	err := forEachNetlinkAttribute(payload[4:], func(attributeType uint16, value []byte) error {
+		switch attributeType {
+		case unix.CTRL_ATTR_FAMILY_ID:
+			if len(value) < 2 {
+				return fmt.Errorf("malformed family ID attribute")
 			}
-			return binary.NativeEndian.Uint16(payload[offset+4 : offset+6]), nil
+			family.id = binary.NativeEndian.Uint16(value)
+		case unix.CTRL_ATTR_MCAST_GROUPS:
+			return forEachNetlinkAttribute(value, func(_ uint16, group []byte) error {
+				var name string
+				var id uint32
+				err := forEachNetlinkAttribute(group, func(groupAttribute uint16, groupValue []byte) error {
+					switch groupAttribute {
+					case unix.CTRL_ATTR_MCAST_GRP_NAME:
+						name = string(bytes.TrimRight(groupValue, "\x00"))
+					case unix.CTRL_ATTR_MCAST_GRP_ID:
+						if len(groupValue) < 4 {
+							return fmt.Errorf("malformed multicast group ID attribute")
+						}
+						id = binary.NativeEndian.Uint32(groupValue)
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				if name != "" {
+					family.groups[name] = id
+				}
+				return nil
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return genericNetlinkFamily{}, err
+	}
+	if family.id == 0 {
+		return genericNetlinkFamily{}, fmt.Errorf("family ID attribute not found")
+	}
+	return family, nil
+}
+
+// forEachNetlinkAttribute calls fn for each attribute in b, with the nested
+// and byte-order flags cleared from the type.
+func forEachNetlinkAttribute(b []byte, fn func(attributeType uint16, value []byte) error) error {
+	for offset := 0; offset+4 <= len(b); {
+		attributeLength := int(binary.NativeEndian.Uint16(b[offset : offset+2]))
+		if attributeLength < 4 || offset+attributeLength > len(b) {
+			return fmt.Errorf("malformed netlink attribute length %d", attributeLength)
+		}
+		attributeType := binary.NativeEndian.Uint16(b[offset+2:offset+4]) &^ (unix.NLA_F_NESTED | unix.NLA_F_NET_BYTEORDER)
+		if err := fn(attributeType, b[offset+4:offset+attributeLength]); err != nil {
+			return err
 		}
 		offset += alignNetlink(attributeLength)
 	}
-	return 0, fmt.Errorf("family ID attribute not found")
+	return nil
+}
+
+// netlinkError decodes the errno of an NLMSG_ERROR or NLMSG_DONE payload.
+func netlinkError(payload []byte) error {
+	if len(payload) < 4 {
+		return fmt.Errorf("malformed netlink error response")
+	}
+	if errno := int32(binary.NativeEndian.Uint32(payload[:4])); errno != 0 {
+		return unix.Errno(-errno)
+	}
+	return nil
 }
 
 func alignNetlink(length int) int {
