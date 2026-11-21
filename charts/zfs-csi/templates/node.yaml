@@ -195,14 +195,18 @@ spec:
           command: ["/bin/sh", "-ceu"]
           args:
             - |-
-{{- if $multiOwner }}
-              # Storage workload owns the host-global handshake queue on owner
-              # nodes. Keep this sidecar alive there without starting a second
-              # tlshd; ordinary nodes still run the client daemon below.
-              if grep -Fqf /etc/zfs-csi/storage-owner-labels /etc/podinfo/labels; then
+              # The kernel offers each TLS handshake to every tlshd in the host
+              # network namespace and hands it to the first that accepts it.
+              # On a storage-owner node the storage agent's tlshd holds both
+              # client and server credentials, so stay idle there.
+              owner=$(/zfs-csi --mode=storage-owner-node --storage-owner-selectors=/etc/zfs-csi/storage-owner-selectors.json)
+              if [ "$owner" = true ]; then
                 exec sleep infinity
               fi
-{{- end }}
+              # Refuse to start beside another tlshd, such as a host
+              # tlshd.service: every handshake it wins fails without the
+              # zfs-csi certificate.
+              /zfs-csi --mode=tlshd-check --tlshd-listeners=0
               # Kubelet projects PodCertificate files at mode 0400, but tlshd
               # enforces 0600 (key) and 0644 (cert/CA). Mirror them into a
               # writable emptyDir with the modes tlshd demands; the loop
@@ -225,6 +229,20 @@ spec:
 {{- end }}
           securityContext:
             privileged: true
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          # Exactly one tlshd, this one or the storage agent's, must listen in
+          # the host network namespace. A refused start reports why.
+          terminationMessagePolicy: FallbackToLogsOnError
+          readinessProbe:
+            exec:
+              command: ["/zfs-csi", "--mode=tlshd-check", "--tlshd-listeners=1"]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 10
           volumeMounts:
             - name: run-zfs
               mountPath: /run/zfs-csi
@@ -241,15 +259,10 @@ spec:
               readOnly: true
             - name: tls-client-live
               mountPath: /run/zfs-csi-tls-live
-{{- if $multiOwner }}
-            - name: node-labels
-              mountPath: /etc/podinfo
+            - name: storage-owner-selectors
+              mountPath: /etc/zfs-csi/storage-owner-selectors.json
+              subPath: storage-owner-selectors.json
               readOnly: true
-            - name: storage-owner-labels
-              mountPath: /etc/zfs-csi/storage-owner-labels
-              subPath: storage-owner-labels
-              readOnly: true
-{{- end }}
 {{- end }}
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
@@ -308,17 +321,9 @@ spec:
         - name: tlshd-config
           configMap:
             name: zfs-csi-tlshd-node-config
-{{- if $multiOwner }}
-        - name: node-labels
-          downwardAPI:
-            items:
-              - path: labels
-                fieldRef:
-                  fieldPath: metadata.labels
-        - name: storage-owner-labels
+        - name: storage-owner-selectors
           configMap:
-            name: zfs-csi-storage-owner-labels
-{{- end }}
+            name: zfs-csi-storage-owner-selectors
 {{- end }}
         # Shared emptyDir for the node-local StagePlugin unix sockets. Co-located
         # in the same pod so the driver can dial the sidecars with zero network hop.

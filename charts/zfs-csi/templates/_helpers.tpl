@@ -59,6 +59,27 @@ tolerations:
 {{- printf "zfs-csi-storage-%s-%s" $slug (sha256sum .name | trunc 8) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/*
+The nodeSelector of each enabled storage-agent Deployment, as a JSON array.
+Mirrors the owner list and nodeSelector merge in storage-agent.yaml. Explicit
+storageOwners count even when this release does not render their agents.
+*/}}
+{{- define "zfs-csi.storageOwnerSelectors" -}}
+{{- $owners := .Values.storageOwners -}}
+{{- if and (eq (len $owners) 0) .Values.storage.enabled -}}
+{{- $owners = list (dict "enabled" .Values.storageNode.enabled "nodeSelector" .Values.storageNode.selector) -}}
+{{- end -}}
+{{- $selectors := list -}}
+{{- range $owner := $owners -}}
+{{- $enabled := true -}}
+{{- if hasKey $owner "enabled" }}{{- $enabled = $owner.enabled }}{{- end -}}
+{{- if $enabled -}}
+{{- $selectors = append $selectors (mergeOverwrite (dict "kubernetes.io/arch" "amd64") (deepCopy $owner.nodeSelector)) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $selectors -}}
+{{- end -}}
+
 {{/* Must match tlsca.ServerSecretName: owner names are DNS subdomains. */}}
 {{- define "zfs-csi.tlsServerSecretName" -}}
 {{- printf "zfs-csi-tls-server-%s" . -}}

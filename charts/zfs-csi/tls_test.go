@@ -4,7 +4,9 @@
 package zfscsi
 
 import (
+	"encoding/json"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -105,26 +107,29 @@ func TestMultiOwnerTLSHasOneDaemonPerStorageHost(t *testing.T) {
 		"--set-json", `storageOwners=[{"name":"storage-a","enabled":true,"nodeSelector":{"zfs.csi.randomvariable.co.uk/storage":"storage-a"},"authoritativePoolGUIDs":["1"],"poolMountRoot":"/tank","nfs":{"host":"10.0.0.7","port":2049},"nvme":{"host":"10.0.0.7","port":4420},"networkDomain":"fabric-a","reachableFrom":["fabric-a","workers"]}]`,
 	}
 	objects := renderedObjects(t, renderChart(t, args...))
-	for _, daemonSet := range objectsByKind(objects, "DaemonSet") {
-		text := marshalObject(t, daemonSet)
-		if !strings.Contains(text, "app.kubernetes.io/component: node") {
+	// The node plugin's tlshd stays idle on a Node that matches one of these
+	// selectors in full, so each must be a storage agent's nodeSelector.
+	var selectors []map[string]any
+	for _, configMap := range objectsByKind(objects, "ConfigMap") {
+		if objectName(configMap) != "zfs-csi-storage-owner-selectors" {
 			continue
 		}
-		for _, want := range []string{"name: tlshd", "name: node-labels", "name: storage-owner-labels", `/etc/podinfo/labels`, "grep -Fqf /etc/zfs-csi/storage-owner-labels", "exec sleep infinity"} {
-			if !strings.Contains(text, want) {
-				t.Fatalf("multi-owner node tlshd gate missing %q", want)
-			}
+		raw, _ := configMap["data"].(map[string]any)["storage-owner-selectors.json"].(string)
+		if err := json.Unmarshal([]byte(raw), &selectors); err != nil {
+			t.Fatalf("decode storage owner selectors %q: %v", raw, err)
 		}
 	}
-	for _, configMap := range objectsByKind(objects, "ConfigMap") {
-		text := marshalObject(t, configMap)
-		if strings.Contains(text, "name: zfs-csi-storage-owner-labels") && strings.Contains(text, `zfs.csi.randomvariable.co.uk/storage="storage-a"`) {
-			goto storageDeployment
+	var agentSelectors []map[string]any
+	for _, deployment := range objectsByKind(objects, "Deployment") {
+		podSpec := deployment["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+		if selector, ok := podSpec["nodeSelector"].(map[string]any); ok && strings.HasPrefix(objectName(deployment), "zfs-csi-storage-") {
+			agentSelectors = append(agentSelectors, selector)
 		}
 	}
-	t.Fatal("multi-owner render missing storage-owner label ConfigMap")
+	if len(agentSelectors) == 0 || !reflect.DeepEqual(selectors, agentSelectors) {
+		t.Fatalf("storage owner selectors = %v, want the storage agent nodeSelectors %v", selectors, agentSelectors)
+	}
 
-storageDeployment:
 	for _, deployment := range objectsByKind(objects, "Deployment") {
 		text := marshalObject(t, deployment)
 		if !strings.Contains(text, "app.kubernetes.io/component: storage") {

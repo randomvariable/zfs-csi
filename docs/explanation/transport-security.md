@@ -21,6 +21,15 @@ that owns the kernel-created transport sockets.
 This shapes everything else. The driver does not implement TLS itself; it makes sure the right
 credential is in the right place, in the right form, at the moment the kernel asks for it.
 
+Each host network namespace must have exactly one `tlshd`. The kernel offers every handshake to
+each `tlshd` listening in the namespace and gives it to the first one that accepts it. A second
+daemon, typically a host `tlshd.service` from the distribution's `ktls-utils` package, has none
+of the zfs-csi credentials, so each handshake it wins fails and the mount reports
+`access denied by server`. On a storage-owner node the storage agent's `tlshd` holds both client
+and server credentials, and the node plugin's `tlshd` stays idle there. Each `tlshd` sidecar
+refuses to start while another daemon listens, and its readiness probe fails while the count is
+not one.
+
 ## NVMe-TCP: Per-Volume Pre-Shared Keys
 
 Block volumes are secured with TLS pre-shared keys rather than certificates. Each volume gets its

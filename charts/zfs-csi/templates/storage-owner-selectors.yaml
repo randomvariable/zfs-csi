@@ -1,0 +1,11 @@
+{{- if and .Values.node.enabled .Values.network.tls.enabled }}
+# Read by the node plugin's tlshd container: on a node that matches one of
+# these selectors the storage agent's tlshd answers every TLS handshake.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zfs-csi-storage-owner-selectors
+  namespace: {{ include "zfs-csi.namespace" . }}
+data:
+  storage-owner-selectors.json: {{ include "zfs-csi.storageOwnerSelectors" . | quote }}
+{{- end }}

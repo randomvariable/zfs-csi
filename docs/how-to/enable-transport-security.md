@@ -48,6 +48,17 @@ kernel's handshake upcalls.
 The `tlshd` sidecars start only when both the node and storage workloads are enabled. If you are
 running a partial installation, TLS volumes will not become ready.
 
+Stop and mask any host `tlshd` on every node first. Ubuntu starts `tlshd.service` when the
+`ktls-utils` package is installed:
+
+```bash
+sudo systemctl mask --now tlshd
+```
+
+A `tlshd` sidecar refuses to start while another `tlshd` listens in the host network namespace.
+The container restarts, and `kubectl describe pod` shows the reason in its last termination
+message.
+
 ## Step 2: Choose the Signing Namespace
 
 The signing CA holds a private key and lives **outside** the driver namespace. This is
@@ -147,6 +158,12 @@ certificate. Check the storage agent and signer logs.
 **Handshake fails with no obvious error.** Confirm `tlshd` is running as a `hostNetwork`
 privileged sidecar on both ends. The kernel's handshake upcall is delivered over netlink in the
 host network namespace; a `tlshd` in a different namespace will never see it.
+
+**Mounts fail intermittently with `access denied by server`, or a `tlshd` container is not
+ready.** Another `tlshd` listens in the host network namespace and wins some handshakes without
+the zfs-csi credentials. The container's termination message or readiness probe failure reports
+the listener count. Run `pgrep -a tlshd` on the node and mask a host daemon with
+`sudo systemctl mask --now tlshd`.
 
 **NVMe attach fails on a node that previously worked.** Confirm the `nvme-keyring` module is
 loaded. Pre-shared keys live in the kernel `.nvme` keyring, and keys are tagged with the network

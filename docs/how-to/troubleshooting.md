@@ -87,7 +87,9 @@ nodes' actual addresses:
 kubectl get nodes -o wide
 ```
 
-**If the node IPs fall outside the export CIDR, this is your issue.**
+**If the node IPs fall outside the export CIDR, this is your issue.** For a TLS class
+(`xprtsec=mtls`), a second `tlshd` in the host network namespace also produces this error. See
+[Enable transport security](enable-transport-security.md#troubleshooting).
 
 ### Solution
 

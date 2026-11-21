@@ -206,6 +206,10 @@ spec:
               # One tlshd must own each host-kernel handshake queue. Mirror the
               # node client certificate here so storage-owner nodes can consume
               # their own exports without a competing node-plugin tlshd.
+              # Refuse to start beside another tlshd, such as a host
+              # tlshd.service: every handshake it wins fails without the
+              # zfs-csi certificates.
+              /zfs-csi --mode=tlshd-check --tlshd-listeners=0
               (
                 while true; do
                   cp -fL /run/zfs-csi-tls-client-projected/tls.crt /run/zfs-csi-tls-client/tls.crt 2>/dev/null || true
@@ -227,6 +231,15 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          # This must stay the only tlshd in the host network namespace. A
+          # refused start reports why.
+          terminationMessagePolicy: FallbackToLogsOnError
+          readinessProbe:
+            exec:
+              command: ["/zfs-csi", "--mode=tlshd-check", "--tlshd-listeners=1"]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 10
           volumeMounts:
             - name: run-zfs
               mountPath: /run/zfs-csi
